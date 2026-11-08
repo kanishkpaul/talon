@@ -1,0 +1,17 @@
+# macOS
+.DS_Store
+
+# Build output
+.build/
+build/
+DerivedData/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+
+# Spike binaries (rebuild with spikes/build.sh)
+spikes/1-sampler/sampler
+spikes/2-memcap/memcap
+spikes/3-thermal/thermal
+spikes/4-health/health
+spikes/5-helper/talond
+spikes/5-helper/helper-client

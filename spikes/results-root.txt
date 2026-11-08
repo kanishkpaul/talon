@@ -1,0 +1,26 @@
+== 1. Hard cap as root (Sun Nov  8 09:23:44 IST 2026)
+Hard-cap test: limit 300 MB, hog grows to 1500 MB in 25 MB steps. Running as uid 0 (root).
+
+  Baseline (no limit)                          reached 1500 MB and exited normally (expected)
+      (footprint seen by watchdog when it fired: 301 MB)
+  D. Soft cap: watchdog at 4 Hz                KILLED by signal 9 after reaching 300 MB  → WORKS ✅
+      (footprint seen by watchdog when it fired: 326 MB)
+  D. Soft cap: watchdog at 10 Hz               KILLED by signal 9 after reaching 325 MB  → WORKS ✅
+      readback: active 300 MB (fatal), inactive 300 MB (fatal)
+  A. setjetsam_ext at launch                   KILLED by signal 9 after reaching 275 MB  → WORKS ✅
+  E. Launch limit, hog is a CHILD process      NOT capped — hog reached 1500 MB and exited normally ❌
+      readback: active 300 MB (fatal), inactive 300 MB (fatal)
+  B. SET_MEMLIMIT_PROPERTIES (running proc)    KILLED by signal 9 after reaching 275 MB  → WORKS ✅
+  C. SET_JETSAM_TASK_LIMIT (running proc)      call refused: Invalid argument
+
+== 2. Admin helper over XPC
+  ✅ helper installed and registered with launchd
+  ✅ helper running as uid 0 · can read 556 of 556 processes · serving uid 501 only
+  ✅ safety rule held — refused: pid 1 belongs to uid 0, not you (501)
+  → hard cap of 300 MB set on pid 48397
+  ✅ running process KILLED (signal 9) at 275 MB — hard cap via helper WORKS
+  helper log:
+    2026-11-08 09:23:56.707 dev.headroom.helper[48396:1342169] headroomd: listening on dev.headroom.helper for uid 501
+
+== 3. Uninstall helper
+  removed ✓
