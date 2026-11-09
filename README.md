@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <b>Put a ceiling on anything. See what wears your hardware. Keep this Mac healthy for years.</b><br>
+  <b>Put a ceiling on anything. See what wears your hardware. Reclaim space with a scalpel. Keep this Mac healthy for years.</b><br>
   <sub>A personal control panel for a fanless M5 MacBook Air — native, quiet, and as polished as the machine it runs on.</sub>
 </p>
 
@@ -33,17 +33,21 @@
 
 <table>
   <tr>
-    <td width="33%" valign="top">
+    <td width="25%" valign="top">
       <h3>Ceilings</h3>
       Give any app, process or experiment a limit on memory, CPU or disk I/O — and decide, per rule, how hard talon holds the line.
     </td>
-    <td width="33%" valign="top">
+    <td width="25%" valign="top">
       <h3>Health</h3>
       Battery capacity and cycles, SSD wear and bytes written, 39 temperature sensors, thermal throttling, swap and memory pressure — with history going back months.
     </td>
-    <td width="33%" valign="top">
+    <td width="25%" valign="top">
       <h3>Care</h3>
       Specific, honest advice: what is writing to your SSD, when the battery has been parked at 100 % too long, what was running when the chip throttled.
+    </td>
+    <td width="25%" valign="top">
+      <h3>Scalpel</h3>
+      Surgical storage cleanup: the exact space each cut gives back, what it is, what it costs to remove — and every cut reversible.
     </td>
   </tr>
 </table>
@@ -69,6 +73,24 @@ talon run --mem 6G --cpu 200% --strict ask -- python train.py   # planned CLI
 ```
 
 A hard memory ceiling on the command and a shared budget across every worker it spawns.
+
+### scalpel: storage, cut precisely
+
+Most cleaners guess. They add up folder sizes that double-count APFS clones, wipe caches that refill an hour later, and hide what they removed. scalpel measures the **space you would actually get back** (clone-aware, hard-link-aware, snapshot-aware), and explains each item before you touch it: what it is, which app made it, when it was last used, and what happens after it's gone.
+
+| | |
+|---|---|
+| **Finds** | Xcode DerivedData and simulators, package-manager caches, Docker disks, AI models, stale `node_modules`, leftovers from deleted apps, installer debris, duplicates, large untouched files, snapshot-held space |
+| **Cuts** | Into a 7-day holding area, restorable in one click. Uses each app's own cleanup tool where one exists. Never touches system paths. |
+| **Protects** | Warns when clearing a cache would just cost SSD writes to rebuild it. Replaces duplicates with APFS clones instead of deleting. |
+| **Watches** | Free-space forecast, the folders growing fastest, runaway logs and caches |
+
+```bash
+talon scalpel scan ~                          # planned CLI
+talon scalpel clean --tier safe --dry-run
+```
+
+Design: [`docs/scalpel.md`](docs/scalpel.md).
 
 <br>
 
@@ -164,12 +186,13 @@ Why this stack, and what was ruled out: [`docs/reports/talon-stack-choice.md`](d
 
 - [x] **Phase 0** — prove the risky parts on this Mac
 - [x] **Research** — language and stack, and the hardware itself
-- [ ] **Phase 0.5** — settle the open questions: XPC peer requirements, widgets under personal signing, live-table and chart performance, a 24-hour write soak
+- [ ] **Phase 0.5** — settle the open questions: XPC peer requirements, widgets under personal signing, live-table and chart performance, a 24-hour write soak, scalpel scan speed and exact-reclaim accuracy
 - [ ] **Phase 1** — `talond`, the sampler, tiered history, the menu bar panel, Overview and Processes
 - [ ] **Phase 2** — ceilings, the strictness ladder, drag-to-set, `talon run`
 - [ ] **Phase 3** — Health and History
-- [ ] **Phase 4** — Care, notifications, widgets, charge-limit awareness
-- [ ] **Phase 5** — motion, haptics, accessibility, the last 10 %
+- [ ] **Phase 4** — scalpel: exact-reclaim scanner, findings, holding area, growth watch
+- [ ] **Phase 5** — Care, notifications, widgets, charge-limit awareness
+- [ ] **Phase 6** — motion, haptics, accessibility, the last 10 %
 
 <br>
 
@@ -193,6 +216,7 @@ sudo ./root-tests.sh                               # installs talond, tests it, 
 talon/
 ├── assets/              banner art
 ├── docs/
+│   ├── scalpel.md       storage analyser and cleaner design
 │   ├── reports/         stack choice · M5 Air health and longevity
 │   └── research/        the notes behind the reports
 └── spikes/              phase 0 — every risky API, tested on this Mac
