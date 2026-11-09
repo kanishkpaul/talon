@@ -58,12 +58,19 @@ public enum SystemSeries: String, CaseIterable, Codable, Sendable {
     case systemPower      // watts, whole machine (battery telemetry)
     case batteryCharge    // %
     case processCount
+    // Phase 3
+    case eClock           // MHz, efficiency cluster average active clock
+    case pClock           // MHz, performance cluster average active clock
+    case pClockRatio      // %, P-cluster clock ÷ its max while busy — the throttling signal (NaN when idle)
+    case onCharger             // 1 plugged in, 0 on battery
 
-    public enum Unit: String, Sendable { case percent, bytes, bytesPerSecond, celsius, watts, level, count }
+    public enum Unit: String, Sendable { case percent, bytes, bytesPerSecond, celsius, watts, level, count, megahertz }
 
     public var unit: Unit {
         switch self {
-        case .cpu, .batteryCharge: .percent
+        case .cpu, .batteryCharge, .pClockRatio: .percent
+        case .eClock, .pClock: .megahertz
+        case .onCharger: .level
         case .memUsed, .memCompressed, .swapUsed, .diskFree: .bytes
         case .diskWriteRate: .bytesPerSecond
         case .cpuTemp, .batteryTemp, .ssdTemp: .celsius
@@ -80,7 +87,7 @@ public enum SystemSeries: String, CaseIterable, Codable, Sendable {
         case .percent, .celsius: 100           // centi-units
         case .bytes, .bytesPerSecond: 1 / 1024 // KiB
         case .watts: 1000                      // mW
-        case .level, .count: 1
+        case .level, .count, .megahertz: 1
         }
     }
 
@@ -100,6 +107,10 @@ public enum SystemSeries: String, CaseIterable, Codable, Sendable {
         case .systemPower: "System power"
         case .batteryCharge: "Battery"
         case .processCount: "Processes"
+        case .eClock: "E-cluster clock"
+        case .pClock: "P-cluster clock"
+        case .pClockRatio: "P-cluster speed"
+        case .onCharger: "On charger"
         }
     }
 
@@ -114,9 +125,11 @@ public enum SystemSeries: String, CaseIterable, Codable, Sendable {
         case .level:
             switch self {
             case .memPressure: return MemoryPressure(rawValue: Int(v.rounded()))?.label ?? "\(Int(v))"
+            case .onCharger: return v >= 0.5 ? "plugged in" : "on battery"
             default: return ThermalPressure(rawValue: Int(v.rounded()))?.label ?? "\(Int(v))"
             }
         case .count: return String(Int(v.rounded()))
+        case .megahertz: return String(format: "%.0f MHz", v)
         }
     }
 }

@@ -46,6 +46,58 @@ public struct AppTotal: Codable, Sendable, Equatable {
     }
 }
 
+/// One app over time, from the per-app tiers.
+public struct AppPoint: Codable, Sendable, Equatable {
+    public var time: TimeInterval
+    public var memoryAverage: Double   // bytes
+    public var memoryPeak: Double      // bytes
+    public var cpuPercent: Double      // average over the bucket, % of one core
+    public var writeRate: Double       // average bytes/s over the bucket
+
+    public init(time: TimeInterval, memoryAverage: Double, memoryPeak: Double, cpuPercent: Double, writeRate: Double) {
+        self.time = time; self.memoryAverage = memoryAverage; self.memoryPeak = memoryPeak
+        self.cpuPercent = cpuPercent; self.writeRate = writeRate
+    }
+}
+
+/// The hardware's long-term numbers, recorded once a day: the trend lines behind Health.
+public struct HealthDay: Codable, Sendable, Equatable, Identifiable {
+    public var day: String                 // yyyy-MM-dd, local time
+    public var time: TimeInterval          // when this row was last refreshed
+    public var cycleCount: Int?
+    public var designCapacity: Int?
+    public var nominalCapacity: Int?
+    public var fullChargeCapacity: Int?
+    public var ssdBytesWritten: UInt64?
+    public var ssdBytesRead: UInt64?
+    public var ssdPercentUsed: Int?
+    public var unsafeShutdowns: UInt64?
+    public var powerCycles: UInt64?
+    public var mediaErrors: UInt64?
+
+    public var id: String { day }
+
+    public init(day: String, time: TimeInterval, battery: BatteryHealth?, ssd: SSDHealth?) {
+        self.day = day; self.time = time
+        cycleCount = battery?.cycleCount; designCapacity = battery?.designCapacity
+        nominalCapacity = battery?.nominalCapacity; fullChargeCapacity = battery?.fullChargeCapacity
+        ssdBytesWritten = ssd?.bytesWritten; ssdBytesRead = ssd?.bytesRead; ssdPercentUsed = ssd?.percentUsed
+        unsafeShutdowns = ssd?.unsafeShutdowns; powerCycles = ssd?.powerCycles; mediaErrors = ssd?.mediaErrors
+    }
+
+    public var batteryHealthPercent: Double? {
+        guard let n = nominalCapacity, let d = designCapacity, d > 0 else { return nil }
+        return 100 * Double(n) / Double(d)
+    }
+
+    public static func dayString(_ date: Date = Date()) -> String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd"
+        return f.string(from: date)
+    }
+}
+
 public enum AppMetric: String, Codable, Sendable, CaseIterable {
     case cpu, memory, disk
 }
@@ -55,6 +107,7 @@ public struct TalonEvent: Codable, Sendable, Equatable {
     public enum Kind: String, Codable, Sendable {
         case daemonStarted, daemonStopped, memoryCapSet, frozen, thawed, killed, thermalChange, memoryPressureChange
         case ceilingWarning, ceilingAction, ceilingChanged
+        case throttling, unsafeShutdown
     }
 
     public var time: TimeInterval

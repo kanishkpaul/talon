@@ -68,6 +68,10 @@ nonisolated final class DemoSource: TalonSource, @unchecked Sendable {
         s[.systemPower] = 6.5 + 3.5 * wave(t, period: 90) + wave(t, period: 7)
         s[.batteryCharge] = 80
         s[.processCount] = 566
+        s[.eClock] = 1500 + 400 * wave(t, period: 60)
+        s[.pClock] = 3900 + 300 * wave(t, period: 75)
+        s[.pClockRatio] = min(100, 90 + 8 * wave(t, period: 240) - (wave(t, period: 900) > 0.8 ? 18 : 0))
+        s[.onCharger] = 0
         return s
     }
 
@@ -114,7 +118,12 @@ nonisolated final class DemoSource: TalonSource, @unchecked Sendable {
             return .events([
                 TalonEvent(time: now - 7200, kind: .daemonStarted, message: "talond 0.1.0 started as uid 0, serving uid 501"),
                 TalonEvent(time: now - 1800, kind: .thermalChange, message: "thermal pressure nominal → moderate"),
+                TalonEvent(time: now - 1700, kind: .throttling, message: "throttling: P cores at 71% of max clock for 30 s+ (moderate, 96 °C) · busiest: python3.13 93%, Xcode 41%"),
                 TalonEvent(time: now - 1500, kind: .thermalChange, message: "thermal pressure moderate → nominal"),
+                TalonEvent(time: now - 900, kind: .ceilingChanged, appKey: "/Applications/Xcode.app", message: "Xcode: ceiling set — 2.61 GB · Ask"),
+                TalonEvent(time: now - 600, kind: .ceilingWarning, appKey: "/Applications/Xcode.app", message: "Xcode crossed its ceiling: 2.82 GB of 2.61 GB memory"),
+                TalonEvent(time: now - 300, kind: .ceilingAction, appKey: "/opt/homebrew/bin/python3.13", message: "python3.13: slowed down python3.13 (pid 4242): efficiency cores, throttled I/O"),
+                TalonEvent(time: now - 86_400 * 3, kind: .unsafeShutdown, message: "1 new unsafe shutdown since 2026-11-05 (power loss, forced restart or panic)"),
             ])
         case .capMemory(let pid, let bytes):
             return .ok("hard memory ceiling of \(ByteSize.format(bytes)) set on pid \(pid) (demo)")
@@ -126,6 +135,43 @@ nonisolated final class DemoSource: TalonSource, @unchecked Sendable {
         case .thaw(let pid):
             lock.withLock { _ = frozen.remove(pid) }
             return .ok("resumed pid \(pid) (demo)")
+        case .healthHistory(let days):
+            let n = max(1, min(days, 120))
+            return .healthHistory((0..<n).map { i in
+                let date = Date(timeIntervalSince1970: now - Double(n - 1 - i) * 86_400)
+                var h = health()
+                h.battery?.cycleCount = 99 - (n - 1 - i) / 3
+                h.battery?.nominalCapacity = 4_319 + (n - 1 - i) / 2 + Int(3 * wave(Double(i), period: 9))
+                h.ssd?.bytesWritten = 12_080_000_000_000 - UInt64(n - 1 - i) * 31_000_000_000 + UInt64(abs(wave(Double(i), period: 7)) * 15e9)
+                h.ssd?.unsafeShutdowns = i < n - 20 ? 19 : 20
+                return HealthDay(day: HealthDay.dayString(date), time: date.timeIntervalSince1970, battery: h.battery, ssd: h.ssd)
+            })
+        case .appHistory(let key, let range, let maxPoints):
+            guard let a = apps.first(where: { $0.key == key }) else { return .appHistory([]) }
+            let n = max(2, min(maxPoints, 400))
+            return .appHistory((0..<n).map { i in
+                let t = now - range + Double(i) * range / Double(n)
+                let w = 1 + 0.25 * wave(t, period: range / 3) + 0.1 * wave(t, period: range / 17)
+                return AppPoint(time: t, memoryAverage: a.mem * w, memoryPeak: a.mem * w * 1.1, cpuPercent: a.cpu * w,
+                                writeRate: a.write * max(0, w - 0.8) * 3)
+            })
+        case .care:
+            return .care([
+                Insight(id: "memory.swap", area: .memory, severity: .act, title: "Swap reached 9.20 GB this week",
+                        detail: "Swap is memory spilling onto the SSD: slower, and every page is a write. Biggest users: Xcode (peak 4.10 GB), Claude (peak 2.90 GB).",
+                        suggestion: "A memory ceiling with Ask on the biggest user keeps it from pushing everything else into swap."),
+                Insight(id: "ssd.top-writer./opt/homebrew/bin/python3.13", area: .ssd, severity: .watch,
+                        title: "python3.13 wrote 74.2 GB to the SSD this week",
+                        detail: "61% of everything talon saw written. Next: Xcode 21.0 GB, Safari 3.10 GB. Writes are what wear an SSD; reads are free.",
+                        suggestion: "If that's a cache or a log, a ceiling on its write rate keeps it in check."),
+                Insight(id: "battery.parked-full", area: .battery, severity: .watch, title: "The battery sat at 95–100 % on the charger for 61 hours this week",
+                        detail: "Lithium-ion ages fastest held full and warm. Plugged-in desk use is exactly when this happens.",
+                        suggestion: "Turn on Optimized Battery Charging, or set a charge limit, in System Settings › Battery › Charging."),
+                Insight(id: "thermal.throttling", area: .thermal, severity: .info, title: "The chip slowed itself down 3× this week to stay cool",
+                        detail: "A fanless Air trades clock speed for heat under sustained load. Most often while python3.13 was busiest.",
+                        suggestion: "Long jobs finish sooner capped below the throttling point: try a CPU ceiling with Slow down."),
+                Insight(id: "ssd.healthy", area: .ssd, severity: .good, title: "SSD wear is 0%", detail: "The drive reports no measurable wear after 11.0 TB written."),
+            ])
         case .ceilings:
             let snap = processes(at: now)
             return lock.withLock { .ceilings(rules, rules.map { status($0, snap) }) }

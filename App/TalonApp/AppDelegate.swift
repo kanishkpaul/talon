@@ -24,6 +24,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         if let button = statusItem.button {
             button.image = NSImage(systemSymbolName: "bird.fill", accessibilityDescription: "Talon")
+            button.setAccessibilityLabel("Talon")
+            button.setAccessibilityHelp("Shows CPU, memory, heat, power and your ceilings")
             button.action = #selector(togglePanel)
             button.target = self
         }
@@ -54,6 +56,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             button.contentTintColor = nil
         }
+        button.setAccessibilityValue(model.asking.isEmpty ? (s.map { "CPU \(Fmt.pct($0[.cpu])), memory \(Fmt.bytes($0[.memUsed]))" } ?? "not connected")
+                                                         : "\(model.asking.count) ceiling waiting for an answer")
         button.toolTip = s.map {
             "CPU \(Fmt.pct($0[.cpu])) · memory \(Fmt.bytes($0[.memUsed])) · \(Fmt.temp($0[.cpuTemp])) · \(Fmt.watts($0[.systemPower]))"
         } ?? "talond isn't connected"
@@ -99,6 +103,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.showWindow(pane)
         }, quit: { NSApp.terminate(nil) })
         let panel = MenuBarPanel(content: content)
+        panel.onCancel = { [weak self] in self?.closePanel() }
         let anchor = buttonWindow.convertToScreen(button.convert(button.bounds, to: nil))
         let size = panel.frame.size
         var origin = NSPoint(x: anchor.midX - size.width / 2, y: anchor.minY - size.height - 6)
@@ -179,13 +184,30 @@ final class MenuBarPanel: NSPanel {
         isMovable = false
         collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
 
-        let glass = NSGlassEffectView(frame: NSRect(origin: .zero, size: size))
-        glass.cornerRadius = 20
-        glass.contentView = host
-        host.frame = glass.bounds
-        host.autoresizingMask = [.width, .height]
-        contentView = glass
+        // Liquid Glass, unless the user asked for less transparency: then a solid, rounded panel.
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency {
+            let solid = NSView(frame: NSRect(origin: .zero, size: size))
+            solid.wantsLayer = true
+            solid.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+            solid.layer?.cornerRadius = 20
+            solid.layer?.borderWidth = 0.5
+            solid.layer?.borderColor = NSColor.separatorColor.cgColor
+            solid.addSubview(host)
+            host.frame = solid.bounds
+            host.autoresizingMask = [.width, .height]
+            contentView = solid
+        } else {
+            let glass = NSGlassEffectView(frame: NSRect(origin: .zero, size: size))
+            glass.cornerRadius = 20
+            glass.contentView = host
+            host.frame = glass.bounds
+            host.autoresizingMask = [.width, .height]
+            contentView = glass
+        }
     }
 
+    var onCancel: (() -> Void)?
+
     override var canBecomeKey: Bool { true }
+    override func cancelOperation(_ sender: Any?) { onCancel?() }
 }

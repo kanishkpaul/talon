@@ -34,6 +34,14 @@ pid_t talon_responsible_pid(pid_t pid) {
     return r > 0 ? r : pid;
 }
 
+// MARK: - Mach
+
+#include <mach/mach.h>
+
+void talon_vm_deallocate(void *address, size_t size) {
+    vm_deallocate(mach_task_self(), (vm_address_t)address, (vm_size_t)size);
+}
+
 // MARK: - memorystatus
 
 #define MEMORYSTATUS_CMD_SET_MEMLIMIT_PROPERTIES 7

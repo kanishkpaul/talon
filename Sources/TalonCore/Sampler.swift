@@ -139,6 +139,17 @@ public final class SystemSampler {
         let battery = BatterySensor.live()
         s[.batteryCharge] = battery.charge.map(Double.init) ?? .nan
         s[.systemPower] = battery.systemPower ?? .nan
+        s[.onCharger] = battery.external.map { $0 ? 1 : 0 } ?? .nan
+
+        if let clocks = ClockSensor.read() {
+            lastClocks = clocks
+            let e = clocks.first { $0.name == "ECPU" } ?? clocks.first { $0.name.hasPrefix("E") }
+            let p = clocks.first { $0.name == "PCPU" } ?? clocks.first { $0.name.hasPrefix("P") }
+            s[.eClock] = e.map(\.avgMHz) ?? .nan
+            s[.pClock] = p.map(\.avgMHz) ?? .nan
+            // Only a busy cluster's clock says anything about throttling.
+            if let p, p.busy >= 0.25 { s[.pClockRatio] = p.ratio * 100 }
+        }
 
         if let p = processes {
             s[.diskWriteRate] = p.processes.reduce(0) { $0 + $1.diskWriteRate }
@@ -148,4 +159,5 @@ public final class SystemSampler {
     }
 
     public var thermal: ThermalReading { lastThermal }
+    public private(set) var lastClocks: [ClusterClock] = []
 }

@@ -37,16 +37,26 @@ public enum SystemSensor {
     }
 
     /// Cumulative CPU ticks across every core. Diff two readings for a system CPU %.
+    /// Per-processor counters, not HOST_CPU_LOAD_INFO: on macOS 27 the host-wide counters update in
+    /// coarse steps (identical reads 200 ms apart), while the per-CPU ones advance smoothly.
     public static func cpuTicks() -> (busy: UInt64, total: UInt64)? {
-        var load = host_cpu_load_info()
-        var count = mach_msg_type_number_t(MemoryLayout<host_cpu_load_info>.size / MemoryLayout<integer_t>.size)
-        let kr = withUnsafeMutablePointer(to: &load) {
-            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { host_statistics(host, HOST_CPU_LOAD_INFO, $0, &count) }
+        var n: natural_t = 0
+        var info: processor_info_array_t?
+        var count: mach_msg_type_number_t = 0
+        guard host_processor_info(host, PROCESSOR_CPU_LOAD_INFO, &n, &info, &count) == KERN_SUCCESS, let info else { return nil }
+        defer { talon_vm_deallocate(info, Int(count) * MemoryLayout<integer_t>.stride) }
+        var busy: UInt64 = 0, total: UInt64 = 0
+        let states = Int(CPU_STATE_MAX)
+        for cpu in 0..<Int(n) {
+            let base = cpu * states
+            let user = UInt64(UInt32(bitPattern: info[base + Int(CPU_STATE_USER)]))
+            let system = UInt64(UInt32(bitPattern: info[base + Int(CPU_STATE_SYSTEM)]))
+            let idle = UInt64(UInt32(bitPattern: info[base + Int(CPU_STATE_IDLE)]))
+            let nice = UInt64(UInt32(bitPattern: info[base + Int(CPU_STATE_NICE)]))
+            busy += user + system + nice
+            total += user + system + idle + nice
         }
-        guard kr == KERN_SUCCESS else { return nil }
-        let t = load.cpu_ticks
-        let user = UInt64(t.0), system = UInt64(t.1), idle = UInt64(t.2), nice = UInt64(t.3)
-        return (user + system + nice, user + system + idle + nice)
+        return (busy, total)
     }
 
     /// Free space on the Data volume — the APFS container's real free space, not counting purgeable.
@@ -73,6 +83,19 @@ public enum ThermalSensor {
     }
 
     public static func read() -> ThermalReading { ThermalReading(pressure: pressure(), sensors: temperatures()) }
+}
+
+/// Per-cluster CPU clocks (private IOReport). The first read primes and returns an empty array.
+public enum ClockSensor {
+    public static func read() -> [ClusterClock]? {
+        var buf = [talon_cluster_t](repeating: talon_cluster_t(), count: 8)
+        var n: Int32 = 0
+        guard talon_clocks_read(&buf, Int32(buf.count), &n) == 0 else { return nil }
+        return buf.prefix(Int(n)).map { c in
+            let name = withUnsafeBytes(of: c.name) { String(decoding: $0.prefix { $0 != 0 }, as: UTF8.self) }
+            return ClusterClock(name: name, avgMHz: c.avg_mhz, maxMHz: c.max_mhz, busy: c.busy)
+        }
+    }
 }
 
 /// AppleSmartBattery in the IORegistry. On macOS 27 the capacities live under `BatteryData`.

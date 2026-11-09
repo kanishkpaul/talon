@@ -14,7 +14,8 @@ enum Tint {
         case .cpuTemp, .thermalPressure, .ssdTemp, .batteryTemp: .orange
         case .systemPower, .batteryCharge: .green
         case .diskWriteRate, .diskFree: .teal
-        case .processCount: .gray
+        case .processCount, .onCharger: .gray
+        case .eClock, .pClock, .pClockRatio: .pink
         }
     }
 
@@ -91,10 +92,12 @@ struct Tile: View {
                 .font(.system(.title3, design: .rounded).weight(.semibold))
                 .monospacedDigit()
                 .contentTransition(.numericText())
+                .animation(.snappy, value: value)
             Text(detail).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
             Sparkline(points: points, tint: Tint.series(series), floor: floor)
                 .frame(height: 26)
                 .padding(.top, 2)
+                .accessibilityHidden(true)
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)

@@ -13,7 +13,7 @@ struct Talon: ParsableCommand {
         abstract: "A firm grip on your Mac: ceilings, health and history.",
         version: "talon \(talonVersion) (protocol v\(talonProtocolVersion))",
         subcommands: [Status.self, Top.self, Health.self, Run.self, CeilingCommand.self, Cap.self, Limit.self, Freeze.self,
-                      Thaw.self, History.self, Apps.self, Events.self, Daemon.self],
+                      Thaw.self, History.self, Apps.self, AppCommand.self, CareCommand.self, Events.self, Daemon.self, ScalpelCommand.self],
         defaultSubcommand: Status.self
     )
 }
@@ -132,6 +132,15 @@ struct Status: ParsableCommand {
             row("Free space", Style.verdict(low ? .watch : .good, ByteSize.format(d.free)) + Style.dim(" of \(ByteSize.format(d.total))"))
         }
         row("SSD writes", SystemSeries.diskWriteRate.format(s[.diskWriteRate]) + Style.dim(" (processes talon can read)"))
+        if let daemon, case .care(let insights)? = try? daemon.send(.care) {
+            let act = insights.filter { $0.severity == .act }, watch = insights.filter { $0.severity == .watch }
+            if let top = act.first ?? watch.first {
+                row("Care", (act.isEmpty ? Style.yellow("●") : Style.red("●")) + " " + top.title
+                    + Style.dim(act.count + watch.count > 1 ? "  (+\(act.count + watch.count - 1) more · talon care)" : "  (talon care)"))
+            } else {
+                row("Care", Style.green("all clear"))
+            }
+        }
         if let ds, let daemon {
             row("talond", Style.green("running") + Style.dim(" as \(ds.euid == 0 ? "root daemon" : "user agent") (\(daemon.endpoint.rawValue)) · \(percent(ds.ownCPUPercent, digits: 2)) CPU · \(ByteSize.format(ds.ownFootprint)) · history \(ByteSize.format(ds.databaseBytes))"))
         } else {
@@ -191,9 +200,12 @@ struct Top: ParsableCommand {
 struct Health: ParsableCommand {
     static let configuration = CommandConfiguration(abstract: "Battery, SSD, thermals, memory and disk — read straight from the hardware.")
     @Flag(name: .long, help: "List every temperature sensor.") var sensors = false
+    @Flag(name: .long, help: "Battery and SSD trends from talond's daily records.") var trend = false
+    @Option(name: .long, help: "With --trend: how many days.") var days = 90
     @OptionGroup var output: JSONFlag
 
     func run() throws {
+        if trend { return try showTrend() }
         let r = HealthProbe.report()
         if output.json { try JSON.print(r); return }
 
@@ -247,6 +259,41 @@ struct Health: ParsableCommand {
         if !r.unavailable.isEmpty {
             section("Unavailable")
             r.unavailable.forEach { print("  " + Style.yellow($0)) }
+        }
+        let clocks = { () -> [ClusterClock] in _ = ClockSensor.read(); usleep(250_000); return ClockSensor.read() ?? [] }()
+        if !clocks.isEmpty {
+            section("CPU clusters")
+            for c in clocks where c.name == "ECPU" || c.name == "PCPU" {
+                row(c.name, String(format: "%.0f of %.0f MHz · %.0f%% busy", c.avgMHz, c.maxMHz, c.busy * 100))
+            }
+        }
+    }
+
+    /// Daily records: battery capacity and cycles, SSD bytes written per day, unsafe shutdowns.
+    private func showTrend() throws {
+        guard case .healthHistory(let days) = try request(.healthHistory(days: days)) else { return }
+        if output.json { try JSON.print(days); return }
+        guard let first = days.first, let last = days.last else {
+            print("no daily records yet — talond writes one shortly after it starts, then hourly"); return
+        }
+        print(Style.bold("Health trend") + Style.dim(" · \(days.count) day\(days.count == 1 ? "" : "s"), \(first.day) → \(last.day)"))
+        let health = days.map { $0.batteryHealthPercent ?? .nan }
+        print("  " + pad(Style.dim("Battery health"), 20) + Style.blue(sparkline(health)) + "  "
+              + (first.batteryHealthPercent.map { String(format: "%.1f%%", $0) } ?? "—") + " → "
+              + (last.batteryHealthPercent.map { String(format: "%.1f%%", $0) } ?? "—"))
+        if let c0 = first.cycleCount, let c1 = last.cycleCount {
+            print("  " + pad(Style.dim("Cycles"), 20) + "\(c0) → \(c1)" + Style.dim(" (+\(c1 - c0))"))
+        }
+        var perDay: [Double] = [.nan]
+        for (a, b) in zip(days, days.dropFirst()) {
+            if let w0 = a.ssdBytesWritten, let w1 = b.ssdBytesWritten, w1 >= w0 { perDay.append(Double(w1 - w0)) } else { perDay.append(.nan) }
+        }
+        let finite = perDay.filter(\.isFinite)
+        print("  " + pad(Style.dim("SSD writes/day"), 20) + Style.blue(sparkline(perDay)) + "  "
+              + (finite.isEmpty ? "needs two days" : "avg \(ByteSize.format(finite.reduce(0, +) / Double(finite.count))) · max \(ByteSize.format(finite.max()!))"))
+        if let w = last.ssdBytesWritten { print("  " + pad(Style.dim("SSD written total"), 20) + ByteSize.format(w)) }
+        if let u0 = first.unsafeShutdowns, let u1 = last.unsafeShutdowns {
+            print("  " + pad(Style.dim("Unsafe shutdowns"), 20) + "\(u1)" + (u1 > u0 ? Style.yellow(" (+\(u1 - u0) in this period)") : Style.dim(" (none new)")))
         }
     }
 }
@@ -529,6 +576,64 @@ struct Apps: ParsableCommand {
         }
         print(Style.dim("last \(TimeSpan.format(range.seconds)), by \(by.rawValue)"))
         print(t.render())
+    }
+}
+
+struct AppCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "app", abstract: "One app's memory, CPU and SSD writes over time.")
+    @Argument(help: "App name (as `talon top` shows it) or its .app path.") var name: String
+    @Option(name: .long, help: "How far back: 1h, 24h, 7d, 30d, 1y.") var range = TimeRange(argument: "24h")!
+    @Option(name: .long, help: "Points to show.") var points = 60
+    @OptionGroup var output: JSONFlag
+
+    func run() throws {
+        let key: String, label: String
+        if name.hasSuffix(".app") {
+            key = (name as NSString).standardizingPath
+            label = ((key as NSString).lastPathComponent as NSString).deletingPathExtension
+        } else {
+            guard case .processes(let snap) = try request(.processes),
+                  let app = snap.apps.first(where: { $0.name.lowercased() == name.lowercased() }) else {
+                throw fail(TalonError(.notFound, "no running app called \(name) — pass its .app path for one that isn't running"))
+            }
+            key = app.key; label = app.name
+        }
+        guard case .appHistory(let pts) = try request(.appHistory(key: key, range: range.seconds, maxPoints: points)) else { return }
+        if output.json { try JSON.print(pts); return }
+        guard !pts.isEmpty else { print("no history for \(label) in the last \(TimeSpan.format(range.seconds))"); return }
+        print(Style.bold(label) + Style.dim(" · last \(TimeSpan.format(range.seconds)) · \(pts.count) points"))
+        func line(_ title: String, _ values: [Double], _ fmt: (Double) -> String) {
+            let finite = values.filter(\.isFinite)
+            guard let mx = finite.max() else { return }
+            print("  " + pad(Style.dim(title), 12) + Style.blue(sparkline(values)) + "  avg " + fmt(finite.reduce(0, +) / Double(finite.count)) + " · max " + fmt(mx))
+        }
+        line("Memory", pts.map(\.memoryAverage)) { ByteSize.format($0) }
+        line("CPU", pts.map(\.cpuPercent)) { String(format: "%.0f%%", $0) }
+        line("Writes", pts.map(\.writeRate)) { ByteSize.format($0) + "/s" }
+    }
+}
+
+struct CareCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "care", abstract: "Specific advice from your Mac's history: SSD wear, battery habits, swap, heat, space.")
+    @Flag(name: .long, help: "Include the all-clear items too.") var all = false
+    @OptionGroup var output: JSONFlag
+
+    func run() throws {
+        guard case .care(let insights) = try request(.care) else { return }
+        if output.json { try JSON.print(insights); return }
+        let shown = insights.filter { all || $0.severity > .good }
+        if shown.isEmpty { print(Style.green("✓ ") + "Nothing needs your attention." + Style.dim(" (talon care --all for the details)")); return }
+        for i in shown {
+            let badge = switch i.severity {
+            case .act: Style.red("● act  ")
+            case .watch: Style.yellow("● watch")
+            case .info: Style.blue("● info ")
+            case .good: Style.green("● good ")
+            }
+            print(badge + "  " + Style.bold(i.title) + Style.dim("  · \(i.area.label)"))
+            print("          " + i.detail)
+            if let s = i.suggestion { print("          " + Style.dim("→ ") + s) }
+        }
     }
 }
 

@@ -57,6 +57,11 @@ public final class Daemon: @unchecked Sendable {
     private var ceilings: [Ceiling] = []
     private var engine = CeilingEngine()
     private var kernelCapRefusalLogged = false
+
+    // Throttling: when the busy P cluster has run well under its max clock, under thermal load.
+    private var slowSince: TimeInterval?
+    private var fastSince: TimeInterval?
+    private var throttleRecorded = false
     private let cpuAtStart: Double
 
     public init(options: Options) {
@@ -89,7 +94,8 @@ public final class Daemon: @unchecked Sendable {
         // The fast lane: memory ceilings re-read only their own processes, four times a second.
         schedule(every: 0.25, leeway: .milliseconds(50)) { $0.fastLane() }
         schedule(every: options.flushInterval, leeway: .seconds(5)) { $0.flush() }
-        schedule(every: 3600, leeway: .seconds(60)) { $0.prune() }
+        schedule(every: 3600, leeway: .seconds(60)) { $0.prune(); $0.recordHealthDay() }
+        queue.asyncAfter(deadline: .now() + 5) { [weak self] in self?.recordHealthDay() }
     }
 
     public func shutdown() {
@@ -207,7 +213,100 @@ public final class Daemon: @unchecked Sendable {
         return .ok(msg)
     }
 
+    // MARK: - Health records
+
+    /// Today's battery and SSD numbers, refreshed hourly. A jump in the SSD's unsafe-shutdown count
+    /// since the last row means the Mac lost power or panicked: worth an event.
+    private func recordHealthDay() {
+        guard let store else { return }
+        let report = HealthProbe.report()
+        let today = HealthDay(day: HealthDay.dayString(), time: now(), battery: report.battery, ssd: report.ssd)
+        let previous = (try? store.healthDays(limit: 2))?.last { $0.day != today.day } ?? (try? store.healthDays(limit: 1))?.last
+        if let before = previous?.unsafeShutdowns, let after = today.unsafeShutdowns, after > before {
+            let n = after - before
+            record(TalonEvent(time: now(), kind: .unsafeShutdown,
+                              message: "\(n) new unsafe shutdown\(n == 1 ? "" : "s") since \(previous!.day) (power loss, forced restart or panic)"))
+        }
+        do { try store.record(today) } catch { log.error("health day not recorded: \(String(describing: error), privacy: .public)") }
+    }
+
+    private func appHistory(key: String, range: TimeInterval, maxPoints: Int) -> [AppPoint] {
+        let to = now(), from = to - range
+        let hourly = range > (store?.retention.appMinute ?? 30 * 86_400)
+        var points = (try? store?.appHistory(key: key, from: from, to: to, hourly: hourly)) ?? []
+        let last = points.last?.time ?? -.infinity
+        for b in (hourly ? apps1h : apps1m).pending where b.start > last && b.start >= from {
+            guard let st = b.apps[key] else { continue }
+            let span = max(1, min(b.period, to - b.start))
+            points.append(AppPoint(time: b.start, memoryAverage: st.memory.avg, memoryPeak: st.memory.maxOrNaN,
+                                   cpuPercent: st.cpuSeconds / span * 100, writeRate: st.bytesWritten / span))
+        }
+        guard points.count > maxPoints, maxPoints > 0 else { return points }
+        let per = Double(points.count) / Double(maxPoints)
+        return (0..<maxPoints).compactMap { b in
+            let lo = Int(Double(b) * per), hi = min(points.count, Int(Double(b + 1) * per))
+            guard lo < hi else { return nil }
+            let slice = points[lo..<hi], n = Double(slice.count)
+            return AppPoint(time: slice.first!.time, memoryAverage: slice.reduce(0) { $0 + $1.memoryAverage } / n,
+                            memoryPeak: slice.map(\.memoryPeak).max() ?? 0, cpuPercent: slice.reduce(0) { $0 + $1.cpuPercent } / n,
+                            writeRate: slice.reduce(0) { $0 + $1.writeRate } / n)
+        }
+    }
+
+    // MARK: - Care
+
+    /// Gathers a week (and a month, for storage) of history and runs the Care rules over it.
+    private func care() -> [Insight] {
+        guard let store else { return [] }
+        flush()
+        let t = now()
+        func hourly(_ s: SystemSeries, days: Double) -> [HistoryPoint] {
+            var pts = (try? store.history(s, from: t - days * 86_400, to: t, tier: .minute)) ?? []
+            let last = pts.last?.time ?? -.infinity
+            for b in tier1m.pending where b.start > last { pts.append(HistoryPoint(time: b.start, min: b[s].minOrNaN, avg: b[s].avg, max: b[s].maxOrNaN)) }
+            let groups = Dictionary(grouping: pts) { ($0.time / 3600).rounded(.down) * 3600 }
+            return groups.keys.sorted().map { h in
+                let g = groups[h]!.filter { $0.avg.isFinite }
+                guard !g.isEmpty else { return HistoryPoint(time: h, min: .nan, avg: .nan, max: .nan) }
+                return HistoryPoint(time: h, min: g.map(\.min).min()!, avg: g.map(\.avg).reduce(0, +) / Double(g.count), max: g.map(\.max).max()!)
+            }
+        }
+        let inputs = CareInputs(
+            now: t, days: (try? store.healthDays(limit: 120)) ?? [],
+            writers: (try? store.topApps(from: t - 7 * 86_400, by: .disk, limit: 5)) ?? [],
+            memoryHogs: (try? store.topApps(from: t - 7 * 86_400, by: .memory, limit: 3)) ?? [],
+            physicalMemory: SystemSensor.physicalMemory, latest: ring.last,
+            hourly: [.batteryCharge: hourly(.batteryCharge, days: 7), .onCharger: hourly(.onCharger, days: 7),
+                     .swapUsed: hourly(.swapUsed, days: 7), .diskFree: hourly(.diskFree, days: 30)],
+            events: (try? store.events(from: t - 7 * 86_400, limit: 1000)) ?? [])
+        return Care.insights(inputs)
+    }
+
+    private func noticeThrottling(_ s: SystemSample) {
+        let ratio = s[.pClockRatio]
+        let hot = s[.thermalPressure] >= 1 || s[.cpuTemp] >= 90
+        if ratio.isFinite && ratio < 80 && hot {
+            fastSince = nil
+            if slowSince == nil { slowSince = s.time }
+            if !throttleRecorded, s.time - slowSince! >= 30 {
+                throttleRecorded = true
+                let top = (latestProcesses?.apps ?? []).sorted { $0.cpuPercent > $1.cpuPercent }.prefix(3)
+                    .map { "\($0.name) \(Int($0.cpuPercent))%" }.joined(separator: ", ")
+                record(TalonEvent(time: s.time, kind: .throttling,
+                                  message: String(format: "throttling: P cores at %.0f%% of max clock for 30 s+ (%@, %.0f °C) · busiest: %@",
+                                                  ratio, ThermalPressure(rawValue: Int(s[.thermalPressure]))?.label ?? "?", s[.cpuTemp], top)))
+            }
+        } else {
+            slowSince = nil
+            if ratio.isNaN || ratio >= 90 {
+                if fastSince == nil { fastSince = s.time }
+                if s.time - fastSince! >= 60 { throttleRecorded = false }
+            }
+        }
+    }
+
     private func noticeChanges(_ s: SystemSample) {
+        noticeThrottling(s)
         if let tp = ThermalPressure(rawValue: Int(s[.thermalPressure].isFinite ? s[.thermalPressure] : -1)) {
             if let last = lastThermal, last != tp {
                 record(TalonEvent(time: s.time, kind: .thermalChange, message: "thermal pressure \(last.label) → \(tp.label)"))
@@ -343,6 +442,16 @@ public final class Daemon: @unchecked Sendable {
             }
             execute(decisions)
             return .ok("\(rule.label): \(updated.map { "ceiling raised to \($0.summary)" } ?? "done")")
+
+        case .healthHistory(let days):
+            guard let store else { return .healthHistory([]) }
+            return .healthHistory((try? store.healthDays(limit: max(1, min(days, 3650)))) ?? [])
+
+        case .appHistory(let key, let range, let maxPoints):
+            return .appHistory(appHistory(key: key, range: range, maxPoints: max(2, min(maxPoints, 2000))))
+
+        case .care:
+            return .care(care())
 
         case .thaw(let pid):
             let outcome = enforcer.thaw(caller: callerUID, pid: pid)

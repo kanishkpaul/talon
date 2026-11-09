@@ -90,7 +90,46 @@ public final class HistoryStore: Sendable {
         m.registerMigration("v2-ceilings") { db in
             try db.execute(sql: "CREATE TABLE ceiling (id TEXT PRIMARY KEY, body BLOB NOT NULL)")
         }
+        m.registerMigration("v3-health") { db in
+            try db.execute(sql: "CREATE TABLE health_daily (day TEXT PRIMARY KEY, body BLOB NOT NULL)")
+        }
         return m
+    }
+
+    // MARK: - Daily health
+
+    /// One row per day; refreshing the same day overwrites it, so the row holds that day's last reading.
+    public func record(_ h: HealthDay) throws {
+        let body = try JSONEncoder().encode(h)
+        try writer.write { db in
+            try db.execute(sql: "INSERT OR REPLACE INTO health_daily (day, body) VALUES (?, ?)", arguments: [h.day, body])
+        }
+    }
+
+    public func healthDays(limit: Int) throws -> [HealthDay] {
+        try writer.read { db in
+            try Data.fetchAll(db, sql: "SELECT body FROM health_daily ORDER BY day DESC LIMIT ?", arguments: [limit])
+                .compactMap { try? JSONDecoder().decode(HealthDay.self, from: $0) }
+        }.reversed()
+    }
+
+    // MARK: - Per-app history
+
+    /// One app's buckets: averages for memory, CPU and write rate per bucket, plus the memory peak.
+    public func appHistory(key: String, from: TimeInterval, to: TimeInterval, hourly: Bool) throws -> [AppPoint] {
+        let table = hourly ? "app_1h" : "app_1m"
+        let period: Double = hourly ? 3600 : 60
+        return try writer.read { db in
+            try Row.fetchAll(db, sql: """
+                SELECT t.ts, t.mem_avg, t.mem_max, t.cpu_ms, t.written_kib FROM \(table) t JOIN app a ON a.id = t.app_id
+                WHERE a.key = ? AND t.ts >= ? AND t.ts <= ? ORDER BY t.ts
+                """, arguments: [key, Int64(from), Int64(to)]).map { r in
+                AppPoint(time: TimeInterval(r[0] as Int64), memoryAverage: Double(r[1] as Int64? ?? 0) * 1024,
+                         memoryPeak: Double(r[2] as Int64? ?? 0) * 1024,
+                         cpuPercent: Double(r[3] as Int64) / 1000 / period * 100,
+                         writeRate: Double(r[4] as Int64) * 1024 / period)
+            }
+        }
     }
 
     // MARK: - Ceilings

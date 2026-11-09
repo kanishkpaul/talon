@@ -28,6 +28,12 @@ enum Snapshot {
                 model.selectedCeiling = model.ceilings.first?.id
                 for pane in MainWindow.Pane.allCases {
                     let window = MainWindow(model: model, initial: pane)
+                    if pane == .history { try? await Task.sleep(for: .seconds(1)) }
+                    if pane == .scalpel, ProcessInfo.processInfo.environment["TALON_SNAPSHOT_SCAN"] != nil {
+                        await render(window, size: NSSize(width: 1240, height: 860), appearance: appearance,
+                                     to: dir.appendingPathComponent("scalpel-\(suffix).png"), settle: 12)
+                        continue
+                    }
                     await render(window, size: NSSize(width: 1240, height: 860), appearance: appearance,
                                  to: dir.appendingPathComponent("\(pane.rawValue.lowercased())-\(suffix).png"))
                 }
@@ -37,7 +43,7 @@ enum Snapshot {
         }
     }
 
-    private static func render<V: View>(_ view: V, size: NSSize?, appearance: NSAppearance.Name, to url: URL) async {
+    private static func render<V: View>(_ view: V, size: NSSize?, appearance: NSAppearance.Name, to url: URL, settle: Double = 2) async {
         let host = NSHostingView(rootView: view.frame(width: size?.width, height: size?.height)
             .background(Color(nsColor: .windowBackgroundColor)))  // offscreen there is no glass or window to sit on
         host.appearance = NSAppearance(named: appearance)
@@ -50,7 +56,7 @@ enum Snapshot {
         window.orderFrontRegardless()
         host.frame = frame
         // Two seconds for charts, the outline's first reloads and icon loading.
-        try? await Task.sleep(for: .seconds(2))
+        try? await Task.sleep(for: .seconds(settle))
         host.layoutSubtreeIfNeeded()
         guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { return }
         host.cacheDisplay(in: host.bounds, to: rep)

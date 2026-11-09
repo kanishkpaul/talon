@@ -1,6 +1,7 @@
 import AppKit
 import Observation
 import UserNotifications
+import WidgetKit
 import TalonIPC
 import TalonModel
 
@@ -26,6 +27,7 @@ final class LiveModel {
     private(set) var health: HealthReport?
     private(set) var topWriters: [AppTotal] = []
     private(set) var isDemo: Bool
+    private(set) var insights: [Insight] = []
     private(set) var ceilings: [Ceiling] = []
     private(set) var ceilingStates: [UUID: CeilingStatus] = [:]
     /// Each ceiling's usage over the last five minutes, for the drag-to-set chart.
@@ -91,6 +93,7 @@ final class LiveModel {
                 if wantsSlow {
                     if case .health(let h) = try source.send(.health) { f.health = h }
                     if case .topApps(let a) = try source.send(.topApps(range: 86_400, by: .disk, limit: 8)) { f.writers = a }
+                    if case .care(let c) = try source.send(.care) { f.insights = c }
                 }
                 return .success(f)
             } catch {
@@ -113,6 +116,9 @@ final class LiveModel {
             if wantsSlow, f.health != nil {
                 health = f.health
                 topWriters = f.writers
+                insights = f.insights
+                notifyInsights(f.insights)
+                writeWidgetSnapshot()
                 lastSlow = Date()
             }
             return viewers > 0 ? 1 : 5
@@ -129,6 +135,45 @@ final class LiveModel {
         var health: HealthReport?
         var writers: [AppTotal] = []
         var ceilings: ([Ceiling], [CeilingStatus])?
+        var insights: [Insight] = []
+    }
+
+    /// The widget's data. Written once a minute (with the slow poll); WidgetKit is nudged to reload.
+    private func writeWidgetSnapshot() {
+        guard !isDemo, let s = latest else { return }
+        let top = insights.first { $0.severity >= .watch }
+        let snap = WidgetSnapshot(time: Date(), connected: connection.isLive, cpu: s[.cpu], memUsed: s[.memUsed],
+                                  memTotal: Double(health?.memory?.physical ?? 0), memPressure: Int(s[.memPressure].isFinite ? s[.memPressure] : 0),
+                                  cpuTemp: s[.cpuTemp], thermalPressure: Int(s[.thermalPressure].isFinite ? s[.thermalPressure] : 0),
+                                  power: s[.systemPower], battery: s[.batteryCharge], swap: s[.swapUsed], diskFree: s[.diskFree],
+                                  careTitle: top?.title, careSeverity: top?.severity.rawValue, asking: asking.count)
+        do {
+            try snap.write()
+            WidgetCenter.shared.reloadAllTimelines()
+        } catch {
+            NSLog("talon: widget snapshot not written: \(error)")
+        }
+    }
+
+    /// "Act" insights become a notification, at most once a week each.
+    private func notifyInsights(_ list: [Insight]) {
+        guard !isDemo else { return }
+        let defaults = UserDefaults.standard
+        var sent = defaults.dictionary(forKey: "notifiedInsights") as? [String: Double] ?? [:]
+        let now = Date().timeIntervalSince1970
+        for i in list where i.severity == .act {
+            if let last = sent[i.id], now - last < 7 * 86_400 { continue }
+            sent[i.id] = now
+            let content = UNMutableNotificationContent()
+            content.title = i.title
+            content.body = i.suggestion.map { "\(i.detail) \($0)" } ?? i.detail
+            let center = UNUserNotificationCenter.current()
+            center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
+                guard granted else { return }
+                center.add(UNNotificationRequest(identifier: "care-\(i.id)", content: content, trigger: nil))
+            }
+        }
+        defaults.set(sent, forKey: "notifiedInsights")
     }
 
     // MARK: - Ceilings
@@ -256,6 +301,30 @@ final class LiveModel {
         return await Task.detached(priority: .userInitiated) { () -> HistorySeries? in
             if case .history(let h)? = try? source.send(.history(series: s, range: range, maxPoints: points)) { return h }
             return nil
+        }.value
+    }
+
+    func events(range: TimeInterval, limit: Int = 200) async -> [TalonEvent] {
+        guard let source else { return [] }
+        return await Task.detached(priority: .userInitiated) { () -> [TalonEvent] in
+            if case .events(let e)? = try? source.send(.events(range: range, limit: limit)) { return e }
+            return []
+        }.value
+    }
+
+    func healthDays(_ days: Int) async -> [HealthDay] {
+        guard let source else { return [] }
+        return await Task.detached(priority: .userInitiated) { () -> [HealthDay] in
+            if case .healthHistory(let d)? = try? source.send(.healthHistory(days: days)) { return d }
+            return []
+        }.value
+    }
+
+    func appHistory(key: String, range: TimeInterval, points: Int) async -> [AppPoint] {
+        guard let source else { return [] }
+        return await Task.detached(priority: .userInitiated) { () -> [AppPoint] in
+            if case .appHistory(let p)? = try? source.send(.appHistory(key: key, range: range, maxPoints: points)) { return p }
+            return []
         }.value
     }
 

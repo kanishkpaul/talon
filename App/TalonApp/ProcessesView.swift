@@ -343,6 +343,8 @@ struct ProcessOutline: NSViewRepresentable {
                 cell.imageView?.image = n.frozen ? NSImage(systemSymbolName: "pause.circle.fill", accessibilityDescription: "paused")
                     : n.isApp ? AppIcons.icon(for: n.key) : nil
                 cell.imageView?.isHidden = cell.imageView?.image == nil
+                cell.imageView?.setAccessibilityElement(false)
+                field.setAccessibilityLabel(n.frozen ? "\(field.stringValue), paused" : field.stringValue)
             case .pid: field.stringValue = "\(n.pid)"
             case .memory: field.stringValue = ByteSize.format(n.memory)
             case .cpu: field.stringValue = String(format: "%.1f", n.cpu)

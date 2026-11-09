@@ -72,6 +72,22 @@ public struct ThermalReading: Codable, Sendable, Equatable {
     }
 }
 
+/// One CPU cluster's clock since the previous reading.
+public struct ClusterClock: Codable, Sendable, Equatable {
+    public var name: String      // "ECPU", "PCPU"
+    public var avgMHz: Double
+    public var maxMHz: Double
+    public var busy: Double      // 0…1
+
+    public init(name: String, avgMHz: Double, maxMHz: Double, busy: Double) {
+        self.name = name; self.avgMHz = avgMHz; self.maxMHz = maxMHz; self.busy = busy
+    }
+
+    /// Clock as a share of the cluster's maximum. Meaningful only when the cluster is busy:
+    /// an idle cluster runs slow on purpose.
+    public var ratio: Double { maxMHz > 0 ? avgMHz / maxMHz : .nan }
+}
+
 public struct MemoryInfo: Codable, Sendable, Equatable {
     public var physical: UInt64
     public var used: UInt64          // app + wired + compressed

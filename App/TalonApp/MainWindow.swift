@@ -4,13 +4,16 @@ import TalonModel
 
 struct MainWindow: View {
     enum Pane: String, CaseIterable, Identifiable {
-        case overview = "Overview", processes = "Processes", ceilings = "Ceilings"
+        case overview = "Overview", care = "Care", processes = "Processes", ceilings = "Ceilings", history = "History", scalpel = "Scalpel"
         var id: Self { self }
         var symbol: String {
             switch self {
             case .overview: "gauge.with.dots.needle.50percent"
             case .processes: "list.bullet.indent"
             case .ceilings: "gauge.with.needle"
+            case .history: "clock.arrow.circlepath"
+            case .care: "heart.text.square"
+            case .scalpel: "scissors"
             }
         }
     }
@@ -27,7 +30,7 @@ struct MainWindow: View {
         NavigationSplitView {
             List(Pane.allCases, selection: $selection) { pane in
                 Label(pane.rawValue, systemImage: pane.symbol)
-                    .badge(pane == .ceilings ? model.asking.count : 0)
+                    .badge(pane == .ceilings ? model.asking.count : pane == .care ? model.insights.filter { $0.severity == .act }.count : 0)
                     .tag(pane)
             }
             .navigationSplitViewColumnWidth(min: 160, ideal: 180)
@@ -42,6 +45,9 @@ struct MainWindow: View {
                 case .overview: OverviewView(model: model)
                 case .processes: ProcessesView(model: model)
                 case .ceilings: CeilingsView(model: model)
+                case .history: HistoryView(model: model)
+                case .care: CareView(model: model)
+                case .scalpel: ScalpelView()
                 }
             }
         }
@@ -49,6 +55,14 @@ struct MainWindow: View {
         .onDisappear { model.endViewing() }
         .onChange(of: model.requestedPane) { _, pane in
             if let pane { selection = pane; model.requestedPane = nil }
+        }
+        .background {
+            // ⌘1 … ⌘6 switch panes.
+            ForEach(Array(Pane.allCases.enumerated()), id: \.offset) { i, pane in
+                Button(pane.rawValue) { selection = pane }
+                    .keyboardShortcut(KeyEquivalent(Character("\(i + 1)")), modifiers: .command)
+                    .hidden()
+            }
         }
     }
 
@@ -82,7 +96,7 @@ struct OverviewView: View {
 
     @State private var range: Range = .h1
     @State private var charts: [SystemSeries: HistorySeries] = [:]
-    private let chartSeries: [SystemSeries] = [.cpu, .memUsed, .cpuTemp, .systemPower, .diskWriteRate, .swapUsed]
+    private let chartSeries: [SystemSeries] = [.cpu, .memUsed, .cpuTemp, .pClockRatio, .systemPower, .diskWriteRate, .swapUsed, .diskFree]
 
     var body: some View {
         ScrollView {
@@ -158,9 +172,18 @@ struct HistoryChart: View {
             .overlay {
                 if pts.isEmpty { Text("No history yet").font(.callout).foregroundStyle(.secondary) }
             }
+            .accessibilityLabel("\(series.label) history")
+            .accessibilityValue(spoken(pts))
         }
         .padding(14)
         .background(.background.secondary, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private func spoken(_ pts: [HistoryPoint]) -> String {
+        guard let last = pts.last, let lo = pts.map(\.min).filter(\.isFinite).min(), let hi = pts.map(\.max).filter(\.isFinite).max() else {
+            return "no data"
+        }
+        return "now \(series.format(last.avg)), lowest \(series.format(lo)), highest \(series.format(hi))"
     }
 
     private func axisLabel(_ v: Double) -> String {
@@ -170,6 +193,7 @@ struct HistoryChart: View {
         case .percent: String(format: "%.0f%%", v)
         case .celsius: String(format: "%.0f°", v)
         case .watts: String(format: "%.0f W", v)
+        case .megahertz: String(format: "%.0f MHz", v)
         default: String(format: "%.0f", v)
         }
     }

@@ -2,7 +2,8 @@
 #
 #   make                 build release binaries
 #   make test            run the test suite
-#   make app             build the menu bar app (make app-demo: run it on synthetic data)
+#   make app             build the menu bar app (make app-demo: run it on synthetic data;
+#                        make install-app: copy it to ~/Applications)
 #   make agent           run talond as a per-user LaunchAgent (no admin; your processes only)
 #   make build && sudo make install
 #                        run talond as a root LaunchDaemon (every process; kernel ceilings on running apps)
@@ -19,7 +20,7 @@ HELPER    := /Library/PrivilegedHelperTools/$(LABEL)
 DAEMON_PLIST := /Library/LaunchDaemons/$(LABEL).plist
 PREFIX    ?= /usr/local
 
-.PHONY: all build test sign app app-demo snapshots agent unagent install uninstall logs spikes clean
+.PHONY: all build test sign app app-demo snapshots install-app agent unagent install uninstall logs spikes clean
 
 all: build
 
@@ -47,6 +48,13 @@ app:
 
 app-demo: app
 	open -n $(APP) --args --demo --open
+
+# Copy the app into ~/Applications (no admin), where LaunchServices and WidgetKit look for it.
+install-app: app
+	mkdir -p "$(HOME)/Applications"
+	rm -rf "$(HOME)/Applications/Talon.app"
+	cp -R $(APP) "$(HOME)/Applications/Talon.app"
+	@echo "installed ~/Applications/Talon.app · open it from there"
 
 # Render the panel, Overview and Processes (light + dark) to .build/snapshots without touching the
 # screen; the panel shots are copied into docs/screenshots for the README.

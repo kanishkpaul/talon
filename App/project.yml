@@ -31,6 +31,10 @@ targets:
         product: TalonModel
       - package: TalonKit
         product: TalonIPC
+      - package: TalonKit
+        product: TalonScalpel   # scans run in the app, as you — never in the root helper
+      - target: TalonWidget
+        embed: true
     info:
       path: TalonApp/Info.plist
       properties:
@@ -46,3 +50,35 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: dev.kanishk.talon.app
         PRODUCT_NAME: Talon
         GENERATE_INFOPLIST_FILE: NO
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
+  # Spike 2 from the stack report: does WidgetKit load an ad-hoc-signed extension? Built either way;
+  # the panel stays the live view if it doesn't.
+  TalonWidget:
+    type: app-extension
+    platform: macOS
+    sources: [TalonWidget]
+    dependencies:
+      - package: TalonKit
+        product: TalonModel
+      - sdk: WidgetKit.framework
+      - sdk: SwiftUI.framework
+    entitlements:
+      path: TalonWidget/TalonWidget.entitlements
+      properties:
+        com.apple.security.app-sandbox: true
+        com.apple.security.temporary-exception.files.absolute-path.read-only: ["/Users/Shared/Talon/"]
+    info:
+      path: TalonWidget/Info.plist
+      properties:
+        CFBundleDisplayName: Talon
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.kanishk.talon.app.widget
+        PRODUCT_NAME: TalonWidget
+        GENERATE_INFOPLIST_FILE: NO
+        SWIFT_DEFAULT_ACTOR_ISOLATION: nonisolated

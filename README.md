@@ -10,7 +10,7 @@
   <img alt="macOS 27" src="https://img.shields.io/badge/macOS-27-1d1d1f?style=flat-square&logo=apple&logoColor=white">
   <img alt="Apple silicon M5" src="https://img.shields.io/badge/Apple%20silicon-M5-0A84FF?style=flat-square">
   <img alt="Swift 6.4" src="https://img.shields.io/badge/Swift-6.4-F05138?style=flat-square&logo=swift&logoColor=white">
-  <img alt="status" src="https://img.shields.io/badge/status-phase%202%20in%20progress-0A84FF?style=flat-square">
+  <img alt="status" src="https://img.shields.io/badge/status-phases%200–6%20built-30D158?style=flat-square">
   <img alt="personal" src="https://img.shields.io/badge/built%20for-one%20mac-8E8E93?style=flat-square">
 </p>
 
@@ -102,8 +102,10 @@ Most cleaners guess. They add up folder sizes that double-count APFS clones, wip
 | **Watches** | Free-space forecast, the folders growing fastest, runaway logs and caches |
 
 ```bash
-talon scalpel scan ~                          # planned CLI
-talon scalpel clean --tier safe --dry-run
+talon scalpel scan ~                          # map + findings, what each cut would really give back
+talon scalpel why ~/Library/Developer         # explain one path
+talon scalpel clean --tier safe               # dry run; add --yes to move it to the holding area
+talon scalpel holding                         # what's held, restore <id>, purge
 ```
 
 Design: [`docs/scalpel.md`](docs/scalpel.md).
@@ -215,10 +217,22 @@ Why this stack, and what was ruled out: [`docs/reports/talon-stack-choice.md`](d
   - [x] CLI: `talon ceiling add · list · rm · toggle · answer`, `talon run --tree-mem --cpu --strict`
   - [x] App: Ceilings pane, drag-to-set with a haptic tick, strictness ladder, ask panel, notifications
   - [ ] Try drag, haptics, notifications and the ask panel with a live `talond` on this Mac
-- [ ] **Phase 3** — Health and History
-- [ ] **Phase 4** — scalpel: exact-reclaim scanner, findings, holding area, growth watch
-- [ ] **Phase 5** — Care, notifications, widgets, charge-limit awareness
-- [ ] **Phase 6** — motion, haptics, accessibility, the last 10 %
+- [x] **Phase 3** — Health and History
+  - [x] Per-cluster CPU clocks from IOReport and a throttling signal (P-cluster clock ÷ max while busy), throttling events naming the busiest apps
+  - [x] Daily battery and SSD records, unsafe-shutdown events, per-app history, `talon health --trend`, `talon app <name>`
+  - [x] History pane: battery-health and SSD-writes-per-day trends, one app over time, a filterable event timeline
+- [x] **Phase 4** — scalpel: exact-reclaim scanner, findings, holding area, growth watch
+  - [x] `getattrlistbulk` scanner: clone-, hard-link- and firmlink-aware; a full home scan (1.6 M files) in ~24 s on one core's worth of kernel time
+  - [x] Findings across every category in the design, tiered and explained; holding area with restore and purge; duplicate → APFS clone
+  - [x] `talon scalpel scan · why · clean · holding · restore · purge · dedupe` (dry-run unless `--yes`), and a Scalpel pane with a treemap sized by reclaimable bytes
+  - [x] Growth watch: the free-space forecast lives in Care
+- [x] **Phase 5** — Care, notifications, widgets, charge-limit awareness
+  - [x] Care: SSD wear and top writers, battery parked at 95–100 % on the charger, swap, throttling, free-space forecast, unsafe shutdowns, battery wear — `talon care`, a Care pane, a line in the panel, a notification per "act" item at most weekly
+  - [x] Widget (small and medium) fed by a snapshot file; whether WidgetKit loads it under ad-hoc signing is untested
+- [x] **Phase 6** — motion, haptics, accessibility, the last 10 %
+  - [x] Spring panel that honours Reduce Motion, solid panel under Reduce Transparency, animated numbers, haptics on the ceiling line and the strictness ladder
+  - [x] VoiceOver: spoken chart summaries, a ceiling adjustable with ↑/↓, labelled status item and process rows; ⌘1–6 panes, Esc closes the panel, ⌘, Settings
+  - [x] App icon, open-at-login switch in Settings
 
 <br>
 
@@ -232,7 +246,7 @@ Why this stack, and what was ruled out: [`docs/reports/talon-stack-choice.md`](d
   <br><sub>The menu bar panel (rendered with <code>--demo</code> data).</sub>
 </p>
 
-A bird in the menu bar that stays quiet until something needs attention: it turns orange under memory or thermal pressure, red when either is critical. Click it for the panel: six live readings with the last five minutes behind each, and the top apps. The window adds **Overview** (history from 15 minutes to 30 days, with min–max bands so spikes survive downsampling; battery, SSD, thermal and storage health; who wrote to the SSD today) and **Processes** (every process grouped under its app, filterable, sortable, with pause, resume and memory ceilings from the context menu).
+A bird in the menu bar that stays quiet until something needs attention: it turns orange under memory or thermal pressure or an approaching ceiling, red when either is critical or a ceiling is waiting for an answer. Click it for the panel: six live readings with the last five minutes behind each, and the top apps. The window has six panes (⌘1–6): **Overview** (history from 15 minutes to 30 days with min–max bands, P-cluster speed, health cards, who wrote to the SSD today), **Care**, **Processes** (every process grouped under its app, with pause, resume and ceilings from the context menu), **Ceilings**, **History** (battery and SSD trends, one app over time, the event timeline) and **Scalpel**.
 
 The app links only `TalonModel` and `TalonIPC`. Every number comes from `talond` over XPC, so it never needs sensors, private APIs or the database.
 
@@ -248,11 +262,11 @@ Needs Xcode 27 (Swift 6.4). Everything below runs as you; only `sudo make instal
 
 ```bash
 make                       # release build of talon + talond, ad-hoc signed
-make test                  # 68 tests, incl. real XPC, kernel ceilings, and ceilings pausing / quitting real processes
+make test                  # 85+ tests, incl. real XPC, kernel ceilings, and ceilings pausing / quitting real processes
 
 .build/release/talon                      # status: CPU, memory, swap, thermals, power, free space
 .build/release/talon top --sort disk      # who's writing to the SSD right now, grouped by app
-.build/release/talon health               # battery, SSD SMART, 37 sensors — straight from the hardware
+.build/release/talon health               # battery, SSD SMART, 37 sensors, cluster clocks — straight from the hardware
 .build/release/talon run --mem 2G -- cmd  # kernel memory ceiling at launch, no admin
 ```
 
@@ -267,6 +281,9 @@ History, ceilings, `cap`, `freeze` and `apps` talk to `talond`. Run it one of tw
 talon daemon                          # is it running, and what does it cost?
 talon history cpuTemp --range 24h     # sparkline + min / avg / max from the tiered history
 talon apps --range 7d --by disk       # which apps wrote the most
+talon app Xcode --range 7d            # one app's memory, CPU and writes over time
+talon health --trend                  # battery capacity, cycles and SSD writes per day, from daily records
+talon care                            # the few things worth doing, most important first
 talon freeze 4242 && talon thaw 4242  # pause in place; talond resumes it if talond ever exits
 talon cap 4242 --mem 2G               # root daemon only
 make logs                             # follow talond's log
@@ -281,6 +298,7 @@ Measured on this Mac: release `talond` costs **~0.5 % CPU and 5.6 MB** sweeping 
 - `PowerTelemetryData.SystemLoad` goes stale on battery (0.5 W while the pack supplied 3.6 W), so system power is voltage × current, minus what goes into the battery when plugged in.
 - The per-app minute table holds the top 40 apps by CPU, by memory *and* by writes, so ~80–110 rows a minute here rather than 40.
 - The daemon's logic lives in a library (`TalonDaemon`), so tests drive the real request handling over a real anonymous XPC connection without launchd or root.
+- Phase 3: `HOST_CPU_LOAD_INFO` updates in coarse steps on macOS 27 (identical reads 200 ms apart), so system CPU comes from the per-processor counters, which advance smoothly.
 - Phase 2: `getpriority()` doesn't report Darwin background state, but the scheduler priority does (31 → 4 when slowed down), so that's what tests check.
 
 </details>
@@ -296,6 +314,15 @@ cd spikes && ./build.sh
 sudo ./root-tests.sh                               # installs the spike helper, tests it, removes it
 ```
 
+### Spike results that changed scalpel
+
+- `ATTR_CMNEXT_LINKID` is per hard-link *name*, and every name reports the full private size — so hard links are grouped by inode, not link id.
+- `PRIVATESIZE` predicted the space actually freed to the MiB in every clone test; it's also the one expensive attribute (~70 % of kernel time), so scans run two workers at utility priority.
+- No space-per-snapshot figure is readable without admin; scalpel shows it as unknown rather than guessing.
+- The leftover matcher's first run had 2 false positives in 19 (a macOS printing component, a library inside an installed app); both classes are now excluded.
+
+Details: [`docs/scalpel.md`](docs/scalpel.md#spike-results).
+
 ## Repository
 
 ```
@@ -310,19 +337,22 @@ talon/
 │   ├── TalonCore/       sampler, tiered aggregator, policy, enforcer, capped launcher
 │   ├── TalonStore/      GRDB schema, tiers, retention (daemon-only)
 │   ├── TalonDaemon/     talond's state, request handling, XPC listener
+│   ├── TalonScalpel/    storage scanner, findings, holding area, dedupe (runs as you, never as root)
 │   ├── talond/          the helper's entry point
 │   └── talon/           the CLI
 ├── Tests/TalonTests/    Swift Testing: units, policy table, store, codec, live sensors, XPC
 ├── App/
 │   ├── project.yml      XcodeGen spec (the .xcodeproj is generated, not committed)
-│   └── TalonApp/        menu bar panel, Overview, Processes (NSOutlineView), Ceilings, ask panel, demo source, snapshots
+│   ├── TalonApp/        menu bar panel; Overview, Care, Processes, Ceilings, History, Scalpel; ask panel; demo source; snapshots
+│   ├── TalonWidget/     small and medium widget, fed by /Users/Shared/Talon/widget.json
+│   └── tools/           app icon generator
 ├── launchd/             LaunchDaemon and LaunchAgent plists
 ├── assets/              banner art
 ├── docs/
 │   ├── scalpel.md       storage analyser and cleaner design
 │   ├── reports/         stack choice · M5 Air health and longevity
 │   └── research/        the notes behind the reports
-└── spikes/              phase 0 — every risky API, tested on this Mac
+└── spikes/              every risky API, tested on this Mac (phase 0, plus 6-scalpel)
 ```
 
 ## Principles

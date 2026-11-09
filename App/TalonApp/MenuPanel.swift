@@ -34,6 +34,8 @@ struct MenuPanel: View {
     var openWindow: (MainWindow.Pane) -> Void
     var quit: () -> Void
     @State private var byCPU = false
+    @State private var appeared = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -45,12 +47,20 @@ struct MenuPanel: View {
                 ProgressView().frame(maxWidth: .infinity, minHeight: 120)
             case .connected:
                 TileGrid(model: model, columns: 2)
+                if let top = model.insights.first(where: { $0.severity >= .watch }) {
+                    Button { openWindow(.care) } label: { CareLine(insight: top, more: model.insights.filter { $0.severity >= .watch }.count - 1) }
+                        .buttonStyle(.plain)
+                }
                 topApps
             }
             footer
         }
         .padding(14)
         .frame(width: 360)
+        .scaleEffect(appeared || reduceMotion ? 1 : 0.96, anchor: .top)
+        .onAppear {
+            withAnimation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.78)) { appeared = true }
+        }
         .onAppear { model.beginViewing() }
         .onDisappear { model.endViewing() }
     }
@@ -112,7 +122,14 @@ struct MenuPanel: View {
                     .help("What talon itself costs. Source: \(connectionLabel)")
             }
             Spacer()
+            Button("Settings…") {
+                NSApp.activate()
+                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+            }
+            .buttonStyle(.borderless).font(.caption)
+            .keyboardShortcut(",", modifiers: .command)
             Button("Quit", action: quit).buttonStyle(.borderless).font(.caption)
+                .keyboardShortcut("q", modifiers: .command)
         }
     }
 

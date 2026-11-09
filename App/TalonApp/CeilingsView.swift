@@ -376,8 +376,16 @@ struct CeilingChart: View {
                     .onHover { inside in if inside { NSCursor.resizeUpDown.push() } else { NSCursor.pop() } }
             }
         }
-        .accessibilityLabel("Ceiling chart")
-        .accessibilityValue(limit.map { "ceiling \(resource.format($0))" } ?? "no ceiling")
+        .accessibilityElement()
+        .accessibilityLabel("\(CeilingDetail.name(resource)) ceiling")
+        .accessibilityValue((limit.map { "ceiling \(resource.format($0))" } ?? "no ceiling") + (current.map { ", using \(resource.format($0))" } ?? ""))
+        .accessibilityAdjustableAction { direction in
+            // Without a trackpad: up and down move the ceiling one snap step.
+            let base = rule.limit(resource) ?? (current ?? 0)
+            let step = snap(base * 0.05)
+            set(snap(max(step, direction == .increment ? base + step : base - step)))
+            commit()
+        }
     }
 
     /// Round numbers only: 64 MB steps for memory, 5 % for CPU, 1 MB/s for writes.
@@ -414,7 +422,10 @@ struct StrictnessLadder: View {
         Card(title: "When it's crossed", symbol: "stairs") {
             VStack(spacing: 4) {
                 ForEach(Strictness.allCases, id: \.self) { s in
-                    Button { selection = s } label: {
+                    Button {
+                        if selection != s { NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now) }
+                        selection = s
+                    } label: {
                         HStack(spacing: 10) {
                             Image(systemName: selection == s ? "largecircle.fill.circle" : "circle")
                                 .foregroundStyle(selection == s ? Color.accentColor : .secondary)
@@ -427,6 +438,8 @@ struct StrictnessLadder: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .accessibilityAddTraits(selection == s ? .isSelected : [])
+                    .accessibilityHint(s.explanation)
                 }
             }
         }
