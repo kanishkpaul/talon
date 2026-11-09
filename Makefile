@@ -53,7 +53,7 @@ app-demo: app
 snapshots: app
 	rm -rf .build/snapshots
 	$(APP)/Contents/MacOS/Talon --demo --snapshot .build/snapshots
-	mkdir -p docs/screenshots && cp .build/snapshots/panel-*.png docs/screenshots/
+	mkdir -p docs/screenshots && cp .build/snapshots/panel-*.png .build/snapshots/ask-*.png docs/screenshots/
 
 agent: build
 	@mkdir -p "$(AGENT_DIR)" "$(HOME)/Library/LaunchAgents"

@@ -82,6 +82,19 @@ public struct Enforcer: Sendable {
         }
     }
 
+    /// Carries out one engine decision on every pid it names. Each pid is policy-checked on its own,
+    /// so a refused one (a root helper that slipped into an app's group) doesn't stop the rest.
+    public func apply(_ d: CeilingEngine.Decision, caller: uid_t) -> [Outcome] {
+        switch d {
+        case .record, .notify, .ask, .expired: []
+        case .throttle(_, let pids, let on): pids.map { throttle(caller: caller, pid: $0, on: on) }
+        case .pause(_, let pids): pids.map { freeze(caller: caller, pid: $0) }
+        case .terminate(_, let pids): pids.map { terminate(caller: caller, pid: $0, force: false) }
+        case .kill(_, let pids): pids.map { terminate(caller: caller, pid: $0, force: true) }
+        case .kernelCap(_, let pids, let bytes): pids.map { capMemory(caller: caller, pid: $0, bytes: bytes) }
+        }
+    }
+
     /// Kernel-enforced memory ceiling on a running process (needs talond running as root).
     public func capMemory(caller: uid_t, pid: pid_t, bytes: UInt64) -> Outcome {
         let t: TargetFacts
@@ -99,6 +112,26 @@ public struct Enforcer: Sendable {
         switch authorize(caller, pid) { case .success(let f): t = f; case .failure(let o): return o }
         guard kill(pid, SIGSTOP) == 0 else { return .failed("SIGSTOP failed: \(String(cString: strerror(errno)))") }
         return .done("paused \(t.name) (pid \(pid)) — `talon thaw \(pid)` resumes it")
+    }
+
+    /// Darwin background priority: the scheduler keeps it on the efficiency cores and throttles its
+    /// disk I/O. Fully reversible.
+    public func throttle(caller: uid_t, pid: pid_t, on: Bool) -> Outcome {
+        let t: TargetFacts
+        switch authorize(caller, pid) { case .success(let f): t = f; case .failure(let o): return o }
+        guard setpriority(PRIO_DARWIN_PROCESS, UInt32(pid), on ? PRIO_DARWIN_BG : 0) == 0 else {
+            return .failed("setpriority failed: \(String(cString: strerror(errno)))")
+        }
+        return .done(on ? "slowed down \(t.name) (pid \(pid)): efficiency cores, throttled I/O" : "restored \(t.name) (pid \(pid)) to normal priority")
+    }
+
+    public func terminate(caller: uid_t, pid: pid_t, force: Bool) -> Outcome {
+        let t: TargetFacts
+        switch authorize(caller, pid) { case .success(let f): t = f; case .failure(let o): return o }
+        // A paused process can't handle SIGTERM until it runs again.
+        if !force { kill(pid, SIGCONT) }
+        guard kill(pid, force ? SIGKILL : SIGTERM) == 0 else { return .failed("kill failed: \(String(cString: strerror(errno)))") }
+        return .done(force ? "force-quit \(t.name) (pid \(pid))" : "asked \(t.name) (pid \(pid)) to quit")
     }
 
     public func thaw(caller: uid_t, pid: pid_t) -> Outcome {

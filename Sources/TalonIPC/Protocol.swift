@@ -2,7 +2,7 @@ import Foundation
 import TalonModel
 
 /// Bump when a `TalonRequest` / `TalonReply` case changes shape. Old clients get a clear error.
-public let talonProtocolVersion = 1
+public let talonProtocolVersion = 2
 public let talonVersion = "0.1.0"
 
 public enum TalonService {
@@ -25,6 +25,11 @@ public enum TalonRequest: Codable, Sendable, Equatable {
     case memoryLimit(pid: Int32)
     case freeze(pid: Int32)
     case thaw(pid: Int32)
+    // Ceilings (v2)
+    case ceilings
+    case setCeiling(Ceiling)
+    case removeCeiling(id: UUID)
+    case answer(id: UUID, choice: AskChoice)
 }
 
 public enum TalonReply: Codable, Sendable {
@@ -36,6 +41,7 @@ public enum TalonReply: Codable, Sendable {
     case topApps([AppTotal])
     case events([TalonEvent])
     case memoryLimit(activeMB: Int32, inactiveMB: Int32, fatal: Bool)
+    case ceilings([Ceiling], [CeilingStatus])
     case ok(String)
     case error(TalonError)
 }

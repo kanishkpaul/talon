@@ -52,6 +52,11 @@ public final class Daemon: @unchecked Sendable {
     private var lastThermal: ThermalPressure?
     private var lastMemoryPressure: MemoryPressure?
     private var timers: [DispatchSourceTimer] = []
+
+    // Ceilings: the rules, and the engine that tracks each one's state.
+    private var ceilings: [Ceiling] = []
+    private var engine = CeilingEngine()
+    private var kernelCapRefusalLogged = false
     private let cpuAtStart: Double
 
     public init(options: Options) {
@@ -64,6 +69,7 @@ public final class Daemon: @unchecked Sendable {
             store = nil
         }
         cpuAtStart = Self.ownCPUSeconds()
+        ceilings = (try? store?.loadCeilings()) ?? []
     }
 
     private var frozenStatePath: String? {
@@ -80,6 +86,8 @@ public final class Daemon: @unchecked Sendable {
             _ = processSampler.sweep()  // prime counters so the first real tick has rates
         }
         schedule(every: 1 / options.sampleHz, leeway: .milliseconds(50)) { $0.tick() }
+        // The fast lane: memory ceilings re-read only their own processes, four times a second.
+        schedule(every: 0.25, leeway: .milliseconds(50)) { $0.fastLane() }
         schedule(every: options.flushInterval, leeway: .seconds(5)) { $0.flush() }
         schedule(every: 3600, leeway: .seconds(60)) { $0.prune() }
     }
@@ -118,11 +126,85 @@ public final class Daemon: @unchecked Sendable {
         apps1m.add(snap.apps, at: snap.time, interval: interval)
         apps1h.add(snap.apps, at: snap.time, interval: interval)
         noticeChanges(sample)
+        runCeilings(processes: snap.processes, apps: snap.apps, memoryOnly: false)
         if options.verbose {
             print(String(format: "tick %.0f · %d procs (%d denied) · sweep %.1f ms · cpu %.0f%% · %@",
                          snap.time, snap.readable, snap.denied, snap.sweepSeconds * 1000, sample[.cpu],
                          SystemSeries.memUsed.format(sample[.memUsed])))
         }
+    }
+
+    // MARK: - Ceilings
+
+    private func fastLane() {
+        guard ceilings.contains(where: { $0.enabled && $0.memory != nil }), var snap = latestProcesses else { return }
+        let pids = engine.fastLanePIDs(ceilings)
+        guard !pids.isEmpty else { return }
+        for i in snap.processes.indices where pids.contains(snap.processes[i].pid) {
+            if let f = ProcessSensor.footprint(snap.processes[i].pid) { snap.processes[i].footprint = f }
+        }
+        latestProcesses = snap
+        runCeilings(processes: snap.processes, apps: snap.apps, memoryOnly: true)
+    }
+
+    private func runCeilings(processes: [ProcessSample], apps: [AppUsage], memoryOnly: Bool) {
+        guard !ceilings.isEmpty else { return }
+        execute(engine.evaluate(ceilings, processes: processes, apps: apps, now: now(), memoryOnly: memoryOnly))
+    }
+
+    /// Turns engine decisions into syscalls (through the policy-checked enforcer) and events.
+    private func execute(_ decisions: [CeilingEngine.Decision]) {
+        for d in decisions {
+            let rule = ceilings.first { $0.id == d.ruleID }
+            let key: String? = if case .app(let k)? = rule?.target { k } else { nil }
+            switch d {
+            case .record(_, let m), .notify(_, let m), .ask(_, let m):
+                record(TalonEvent(time: now(), kind: .ceilingWarning, appKey: key, message: m))
+            case .expired(let id):
+                ceilings.removeAll { $0.id == id }
+                try? store?.deleteCeiling(id)
+                if let rule { record(TalonEvent(time: now(), kind: .ceilingChanged, appKey: key, message: "\(rule.label): ceiling ended with its process")) }
+            default:
+                for outcome in enforcer.apply(d, caller: options.allowedUID) {
+                    switch outcome {
+                    case .done(let m):
+                        record(TalonEvent(time: now(), kind: .ceilingAction, appKey: key, message: "\(rule?.label ?? "ceiling"): \(m)"))
+                    case .refused(let m):
+                        log.notice("ceiling action refused: \(m, privacy: .public)")
+                    case .failed(let m):
+                        if case .kernelCap = d {
+                            guard !kernelCapRefusalLogged else { continue }
+                            kernelCapRefusalLogged = true
+                        }
+                        record(TalonEvent(time: now(), kind: .ceilingAction, appKey: key, message: "\(rule?.label ?? "ceiling"): \(m)"))
+                    }
+                }
+                if case .pause(_, let pids) = d {
+                    for pid in pids { if let start = ProcessSensor.read(pid)?.startTime, ProcessSensor.info(pid)?.stopped == true { frozen[pid] = start } }
+                    persistFrozen()
+                }
+            }
+        }
+    }
+
+    private func setCeiling(_ c: Ceiling, callerUID: uid_t) -> TalonReply {
+        guard c.hasLimit else { return .error(TalonError(.badRequest, "a ceiling needs at least one limit (memory, CPU or writes)")) }
+        if let m = c.memory, m < 16 << 20 { return .error(TalonError(.badRequest, "a memory ceiling under 16 MB would stop almost anything instantly")) }
+        if let cpu = c.cpu, cpu <= 0 { return .error(TalonError(.badRequest, "a CPU ceiling must be above 0%")) }
+        switch c.target {
+        case .process(let pid, _), .tree(let pid, _):
+            if case .refuse(let why) = enforcer.policy.check(callerUID: callerUID, target: TargetFacts.lookup(pid)) {
+                return .error(TalonError(.refused, "refused: \(why)"))
+            }
+        case .app: break
+        }
+        let isNew = !ceilings.contains { $0.id == c.id }
+        if let i = ceilings.firstIndex(where: { $0.id == c.id }) { ceilings[i] = c } else { ceilings.append(c) }
+        do { try store?.save(c) } catch { log.error("ceiling not saved: \(String(describing: error), privacy: .public)") }
+        let key: String? = if case .app(let k) = c.target { k } else { nil }
+        let msg = "\(c.label): \(isNew ? "ceiling set" : "ceiling updated") — \(c.summary) · \(c.strictness.label)\(c.enabled ? "" : " (off)")"
+        record(TalonEvent(time: now(), kind: .ceilingChanged, appKey: key, message: msg))
+        return .ok(msg)
     }
 
     private func noticeChanges(_ s: SystemSample) {
@@ -237,6 +319,30 @@ public final class Daemon: @unchecked Sendable {
                 persistFrozen()
             }
             return reply(outcome, kind: .frozen, pid: pid)
+
+        case .ceilings:
+            return .ceilings(ceilings, engine.status(ceilings))
+
+        case .setCeiling(let c):
+            return setCeiling(c, callerUID: callerUID)
+
+        case .removeCeiling(let id):
+            guard let rule = ceilings.first(where: { $0.id == id }) else { return .error(TalonError(.notFound, "no such ceiling")) }
+            execute(engine.remove(id))
+            ceilings.removeAll { $0.id == id }
+            try? store?.deleteCeiling(id)
+            record(TalonEvent(time: now(), kind: .ceilingChanged, message: "\(rule.label): ceiling removed"))
+            return .ok("removed the ceiling on \(rule.label)")
+
+        case .answer(let id, let choice):
+            guard let rule = ceilings.first(where: { $0.id == id }) else { return .error(TalonError(.notFound, "no such ceiling")) }
+            let (decisions, updated) = engine.answer(rule, choice, now: now())
+            if let updated {
+                if let i = ceilings.firstIndex(where: { $0.id == id }) { ceilings[i] = updated }
+                try? store?.save(updated)
+            }
+            execute(decisions)
+            return .ok("\(rule.label): \(updated.map { "ceiling raised to \($0.summary)" } ?? "done")")
 
         case .thaw(let pid):
             let outcome = enforcer.thaw(caller: callerUID, pid: pid)

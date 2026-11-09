@@ -54,6 +54,7 @@ public enum AppMetric: String, Codable, Sendable, CaseIterable {
 public struct TalonEvent: Codable, Sendable, Equatable {
     public enum Kind: String, Codable, Sendable {
         case daemonStarted, daemonStopped, memoryCapSet, frozen, thawed, killed, thermalChange, memoryPressureChange
+        case ceilingWarning, ceilingAction, ceilingChanged
     }
 
     public var time: TimeInterval

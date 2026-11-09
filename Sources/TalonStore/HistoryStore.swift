@@ -87,7 +87,29 @@ public final class HistoryStore: Sendable {
                     pid INTEGER, app_key TEXT, message TEXT NOT NULL);
                 """)
         }
+        m.registerMigration("v2-ceilings") { db in
+            try db.execute(sql: "CREATE TABLE ceiling (id TEXT PRIMARY KEY, body BLOB NOT NULL)")
+        }
         return m
+    }
+
+    // MARK: - Ceilings
+
+    public func loadCeilings() throws -> [Ceiling] {
+        try writer.read { db in
+            try Data.fetchAll(db, sql: "SELECT body FROM ceiling").compactMap { try? JSONDecoder().decode(Ceiling.self, from: $0) }
+        }.sorted { $0.createdAt < $1.createdAt }
+    }
+
+    public func save(_ c: Ceiling) throws {
+        let body = try JSONEncoder().encode(c)
+        try writer.write { db in
+            try db.execute(sql: "INSERT OR REPLACE INTO ceiling (id, body) VALUES (?, ?)", arguments: [c.id.uuidString, body])
+        }
+    }
+
+    public func deleteCeiling(_ id: UUID) throws {
+        try writer.write { db in try db.execute(sql: "DELETE FROM ceiling WHERE id = ?", arguments: [id.uuidString]) }
     }
 
     /// System series are columns. New `SystemSeries` cases get their columns added here, so the

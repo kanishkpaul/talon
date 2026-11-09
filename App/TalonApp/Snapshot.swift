@@ -21,6 +21,11 @@ enum Snapshot {
                 let suffix = appearance == .aqua ? "light" : "dark"
                 let panel = MenuPanel(model: model, openWindow: { _ in }, quit: {})
                 await render(panel, size: nil, appearance: appearance, to: dir.appendingPathComponent("panel-\(suffix).png"))
+                if let rule = model.asking.first {
+                    await render(AskBanner(model: model, rule: rule).frame(width: 420).padding(6), size: nil, appearance: appearance,
+                                 to: dir.appendingPathComponent("ask-\(suffix).png"))
+                }
+                model.selectedCeiling = model.ceilings.first?.id
                 for pane in MainWindow.Pane.allCases {
                     let window = MainWindow(model: model, initial: pane)
                     await render(window, size: NSSize(width: 1240, height: 860), appearance: appearance,

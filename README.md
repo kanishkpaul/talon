@@ -10,7 +10,7 @@
   <img alt="macOS 27" src="https://img.shields.io/badge/macOS-27-1d1d1f?style=flat-square&logo=apple&logoColor=white">
   <img alt="Apple silicon M5" src="https://img.shields.io/badge/Apple%20silicon-M5-0A84FF?style=flat-square">
   <img alt="Swift 6.4" src="https://img.shields.io/badge/Swift-6.4-F05138?style=flat-square&logo=swift&logoColor=white">
-  <img alt="status" src="https://img.shields.io/badge/status-phase%201%20in%20progress-0A84FF?style=flat-square">
+  <img alt="status" src="https://img.shields.io/badge/status-phase%202%20in%20progress-0A84FF?style=flat-square">
   <img alt="personal" src="https://img.shields.io/badge/built%20for-one%20mac-8E8E93?style=flat-square">
 </p>
 
@@ -65,16 +65,30 @@
 | **Quit** | Ask it to quit; force-quit after a grace period. |
 | **Hard cap** | The kernel enforces it. The process can never exceed the ceiling. |
 
-Every rule also has a warning threshold and a grace period, so a one-second spike never kills your work. The signature interaction: set a ceiling by **dragging a line across the app's live chart**, with a haptic tick as you cross its current usage.
+Every rule also has a warning threshold and a grace period, so a one-second spike never kills your work, and a release delay, so a slowed-down app isn't let go the moment it dips under. The signature interaction: set a ceiling by **dragging a line across the app's live chart**, with a haptic tick as you cross its current usage.
+
+```bash
+talon ceiling add Xcode --mem 8G --strict ask         # the glass panel asks: raise 25 %, pause, quit, or ignore
+talon ceiling add Safari --cpu 150% --strict slow     # efficiency cores and throttled I/O while it's over
+talon ceiling add 4242 --mem 2G --strict quit --grace 10s
+talon ceiling                                         # every ceiling, live usage, state, last action
+```
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/ask-dark.png">
+    <img alt="The ask panel" src="docs/screenshots/ask-light.png" width="420">
+  </picture>
+</p>
 
 ### For experiments
 
 ```bash
-talon run --mem 6G -- python train.py                           # works today: kernel-enforced, no admin
-talon run --mem 6G --cpu 200% --strict ask -- python train.py   # planned
+talon run --mem 6G -- python train.py                                  # kernel ceiling on the command, no admin
+talon run --tree-mem 10G --cpu 400% --strict quit -- python train.py   # one budget for every worker it spawns
 ```
 
-A hard memory ceiling on the command today; a shared budget across every worker it spawns is next.
+`--mem` is a kernel limit on the command itself. `--tree-mem` and `--cpu` are a budget shared by the whole process tree, enforced by talon at 4 Hz with the same engine `talond` uses — no daemon needed.
 
 ### scalpel: storage, cut precisely
 
@@ -196,6 +210,11 @@ Why this stack, and what was ruled out: [`docs/reports/talon-stack-choice.md`](d
   - [x] Menu bar panel, Overview and Processes (XcodeGen app on an AppKit spine)
   - [ ] Run the app against a live `talond` (agent or root daemon) and tune it on real data
 - [ ] **Phase 2** — ceilings, the strictness ladder, drag-to-set, `talon run`
+  - [x] Ceiling engine: all seven rungs, warn line, grace, release hysteresis, Ask answers — pure and unit-tested
+  - [x] `talond`: persisted ceilings, 4 Hz fast lane for memory, every action policy-checked and logged
+  - [x] CLI: `talon ceiling add · list · rm · toggle · answer`, `talon run --tree-mem --cpu --strict`
+  - [x] App: Ceilings pane, drag-to-set with a haptic tick, strictness ladder, ask panel, notifications
+  - [ ] Try drag, haptics, notifications and the ask panel with a live `talond` on this Mac
 - [ ] **Phase 3** — Health and History
 - [ ] **Phase 4** — scalpel: exact-reclaim scanner, findings, holding area, growth watch
 - [ ] **Phase 5** — Care, notifications, widgets, charge-limit awareness
@@ -229,7 +248,7 @@ Needs Xcode 27 (Swift 6.4). Everything below runs as you; only `sudo make instal
 
 ```bash
 make                       # release build of talon + talond, ad-hoc signed
-make test                  # 47 tests, including real XPC round-trips and a kernel ceiling
+make test                  # 68 tests, incl. real XPC, kernel ceilings, and ceilings pausing / quitting real processes
 
 .build/release/talon                      # status: CPU, memory, swap, thermals, power, free space
 .build/release/talon top --sort disk      # who's writing to the SSD right now, grouped by app
@@ -237,11 +256,11 @@ make test                  # 47 tests, including real XPC round-trips and a kern
 .build/release/talon run --mem 2G -- cmd  # kernel memory ceiling at launch, no admin
 ```
 
-History, `cap`, `freeze` and `apps` talk to `talond`. Run it one of two ways:
+History, ceilings, `cap`, `freeze` and `apps` talk to `talond`. Run it one of two ways:
 
 | | Command | Sees | Can |
 |---|---|---|---|
-| **User agent** | `make agent` · `make unagent` | your processes | history, freeze / thaw |
+| **User agent** | `make agent` · `make unagent` | your processes | history, ceilings (Hard cap falls back to stopping the largest process), freeze / thaw |
 | **Root daemon** | `make build && sudo make install` · `sudo make uninstall` | every process | all of that, plus kernel ceilings on running apps |
 
 ```bash
@@ -262,6 +281,7 @@ Measured on this Mac: release `talond` costs **~0.5 % CPU and 5.6 MB** sweeping 
 - `PowerTelemetryData.SystemLoad` goes stale on battery (0.5 W while the pack supplied 3.6 W), so system power is voltage × current, minus what goes into the battery when plugged in.
 - The per-app minute table holds the top 40 apps by CPU, by memory *and* by writes, so ~80–110 rows a minute here rather than 40.
 - The daemon's logic lives in a library (`TalonDaemon`), so tests drive the real request handling over a real anonymous XPC connection without launchd or root.
+- Phase 2: `getpriority()` doesn't report Darwin background state, but the scheduler priority does (31 → 4 when slowed down), so that's what tests check.
 
 </details>
 
@@ -295,7 +315,7 @@ talon/
 ├── Tests/TalonTests/    Swift Testing: units, policy table, store, codec, live sensors, XPC
 ├── App/
 │   ├── project.yml      XcodeGen spec (the .xcodeproj is generated, not committed)
-│   └── TalonApp/        menu bar panel, Overview, Processes (NSOutlineView), demo source, snapshots
+│   └── TalonApp/        menu bar panel, Overview, Processes (NSOutlineView), Ceilings, ask panel, demo source, snapshots
 ├── launchd/             LaunchDaemon and LaunchAgent plists
 ├── assets/              banner art
 ├── docs/

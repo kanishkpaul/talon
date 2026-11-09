@@ -12,6 +12,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow?
     private var outsideClick: Any?
     private var iconTimer: Timer?
+    private var askPanel: NSPanel?
+    private var askingFor: UUID?
 
     func applicationDidFinishLaunching(_ note: Notification) {
         if let dir = Snapshot.requestedDirectory {
@@ -26,7 +28,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             button.target = self
         }
         iconTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.refreshIcon() }
+            MainActor.assumeIsolated {
+                self?.refreshIcon()
+                self?.refreshAsk()
+            }
         }
         if CommandLine.arguments.contains("--open") { showWindow(.overview) }
     }
@@ -38,11 +43,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let s = model.latest
         let mem = s?.memoryPressure ?? .normal
         let heat = s?.thermalPressure ?? .nominal
+        let phases = model.ceilingStates.values.map(\.phase)
         if !model.connection.isLive {
             button.contentTintColor = .tertiaryLabelColor
-        } else if mem == .critical || heat.rawValue >= ThermalPressure.trapping.rawValue {
+        } else if mem == .critical || heat.rawValue >= ThermalPressure.trapping.rawValue || phases.contains(.asking) {
             button.contentTintColor = .systemRed
-        } else if mem == .warning || heat.rawValue >= ThermalPressure.moderate.rawValue {
+        } else if mem == .warning || heat.rawValue >= ThermalPressure.moderate.rawValue
+                    || phases.contains(.approaching) || phases.contains(.over) || phases.contains(.enforced) {
             button.contentTintColor = .systemOrange
         } else {
             button.contentTintColor = nil
@@ -50,6 +57,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         button.toolTip = s.map {
             "CPU \(Fmt.pct($0[.cpu])) · memory \(Fmt.bytes($0[.memUsed])) · \(Fmt.temp($0[.cpuTemp])) · \(Fmt.watts($0[.systemPower]))"
         } ?? "talond isn't connected"
+    }
+
+    // MARK: - Ask panel
+
+    /// An Ask ceiling was crossed: a small glass panel under the menu bar, top right, until it's
+    /// answered (here, in the window, or with `talon ceiling answer`) or usage drops back.
+    private func refreshAsk() {
+        let pending = model.asking.first
+        if let shown = askingFor, pending?.id != shown {
+            askPanel?.orderOut(nil)
+            askPanel = nil
+            askingFor = nil
+        }
+        guard let rule = pending, askingFor == nil else { return }
+        let panel = MenuBarPanel(content: AskBanner(model: model, rule: rule) { [weak self] in
+            self?.askPanel?.orderOut(nil)
+            self?.askPanel = nil
+            self?.askingFor = nil
+        }
+        .frame(width: 420)
+        .padding(6))
+        if let screen = NSScreen.main?.visibleFrame {
+            panel.setFrameOrigin(NSPoint(x: screen.maxX - panel.frame.width - 12, y: screen.maxY - panel.frame.height - 12))
+        }
+        panel.orderFrontRegardless()
+        askPanel = panel
+        askingFor = rule.id
     }
 
     // MARK: - Panel

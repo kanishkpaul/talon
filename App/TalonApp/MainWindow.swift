@@ -4,9 +4,15 @@ import TalonModel
 
 struct MainWindow: View {
     enum Pane: String, CaseIterable, Identifiable {
-        case overview = "Overview", processes = "Processes"
+        case overview = "Overview", processes = "Processes", ceilings = "Ceilings"
         var id: Self { self }
-        var symbol: String { self == .overview ? "gauge.with.dots.needle.50percent" : "list.bullet.indent" }
+        var symbol: String {
+            switch self {
+            case .overview: "gauge.with.dots.needle.50percent"
+            case .processes: "list.bullet.indent"
+            case .ceilings: "gauge.with.needle"
+            }
+        }
     }
 
     var model: LiveModel
@@ -20,7 +26,9 @@ struct MainWindow: View {
     var body: some View {
         NavigationSplitView {
             List(Pane.allCases, selection: $selection) { pane in
-                Label(pane.rawValue, systemImage: pane.symbol).tag(pane)
+                Label(pane.rawValue, systemImage: pane.symbol)
+                    .badge(pane == .ceilings ? model.asking.count : 0)
+                    .tag(pane)
             }
             .navigationSplitViewColumnWidth(min: 160, ideal: 180)
             .safeAreaInset(edge: .bottom) { sourceFooter }
@@ -33,11 +41,15 @@ struct MainWindow: View {
                 switch selection {
                 case .overview: OverviewView(model: model)
                 case .processes: ProcessesView(model: model)
+                case .ceilings: CeilingsView(model: model)
                 }
             }
         }
         .onAppear { model.beginViewing() }
         .onDisappear { model.endViewing() }
+        .onChange(of: model.requestedPane) { _, pane in
+            if let pane { selection = pane; model.requestedPane = nil }
+        }
     }
 
     private var sourceFooter: some View {

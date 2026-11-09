@@ -25,6 +25,8 @@ struct ProcessesView: View {
                 case .freeze(let pid): run(.freeze(pid: pid))
                 case .thaw(let pid): run(.thaw(pid: pid))
                 case .cap(let pid, let name): capTarget = CapTarget(pid: pid, name: name)
+                case .ceiling(let key):
+                    if let app = model.snapshot?.apps.first(where: { $0.key == key }) { model.open(ceilingFor: app) }
                 }
             }
             footer
@@ -126,7 +128,7 @@ struct CapSheet: View {
 // MARK: - The outline
 
 struct ProcessOutline: NSViewRepresentable {
-    enum Action { case freeze(Int32), thaw(Int32), cap(Int32, String) }
+    enum Action { case freeze(Int32), thaw(Int32), cap(Int32, String), ceiling(String) }
 
     var snapshot: ProcessSnapshot?
     var frozen: Set<Int32>
@@ -393,7 +395,10 @@ struct ProcessOutline: NSViewRepresentable {
             } else {
                 menu.addItem(item("Pause \(who)", "pause.fill") { [weak self] in self?.onAction(.freeze(n.pid)) })
             }
-            menu.addItem(item("Set memory ceiling…", "gauge.with.needle") { [weak self] in self?.onAction(.cap(n.pid, n.name)) })
+            if n.isApp {
+                menu.addItem(item("Ceiling for \(n.name)…", "gauge.with.needle") { [weak self] in self?.onAction(.ceiling(n.key)) })
+            }
+            menu.addItem(item("Hard-cap this process's memory…", "lock") { [weak self] in self?.onAction(.cap(n.pid, n.name)) })
             menu.addItem(.separator())
             menu.addItem(item("Copy PID \(n.pid)", "doc.on.doc") {
                 NSPasteboard.general.clearContents()

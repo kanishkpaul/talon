@@ -28,6 +28,12 @@ nonisolated final class DemoSource: TalonSource, @unchecked Sendable {
     private let start = Date().timeIntervalSince1970
     private let lock = NSLock()
     private var frozen: Set<Int32> = []
+    private var rules: [Ceiling] = [
+        Ceiling(target: .app(key: "/Applications/Xcode.app"), label: "Xcode", memory: 2_800_000_000, strictness: .ask),
+        Ceiling(target: .app(key: "/opt/homebrew/bin/python3.13"), label: "python3.13", cpu: 80, strictness: .slowDown),
+        Ceiling(target: .app(key: "/Applications/Safari.app"), label: "Safari", memory: 3 << 30, cpu: 150, strictness: .warn),
+    ]
+    private var answered: Set<UUID> = []
 
     private struct DemoApp { var key: String; var name: String; var pid: Int32; var mem: Double; var cpu: Double; var write: Double; var helpers: [String] }
     private let apps: [DemoApp] = [
@@ -120,7 +126,50 @@ nonisolated final class DemoSource: TalonSource, @unchecked Sendable {
         case .thaw(let pid):
             lock.withLock { _ = frozen.remove(pid) }
             return .ok("resumed pid \(pid) (demo)")
+        case .ceilings:
+            let snap = processes(at: now)
+            return lock.withLock { .ceilings(rules, rules.map { status($0, snap) }) }
+        case .setCeiling(let c):
+            lock.withLock {
+                if let i = rules.firstIndex(where: { $0.id == c.id }) { rules[i] = c } else { rules.append(c) }
+                answered.remove(c.id)
+            }
+            return .ok("\(c.label): ceiling set — \(c.summary) · \(c.strictness.label) (demo)")
+        case .removeCeiling(let id):
+            lock.withLock { rules.removeAll { $0.id == id } }
+            return .ok("removed (demo)")
+        case .answer(let id, let choice):
+            lock.withLock {
+                answered.insert(id)
+                if case .raise(let f) = choice, let i = rules.firstIndex(where: { $0.id == id }) {
+                    rules[i].memory = rules[i].memory.map { UInt64(Double($0) * f) }
+                    rules[i].cpu = rules[i].cpu.map { $0 * f }
+                }
+            }
+            return .ok("answered (demo)")
         }
+    }
+
+    /// A simplified engine for the demo: phase from the current ratio, no timers.
+    private func status(_ r: Ceiling, _ snap: ProcessSnapshot) -> CeilingStatus {
+        guard case .app(let key) = r.target, let a = snap.apps.first(where: { $0.key == key }) else {
+            return CeilingStatus(id: r.id, phase: .gone, usage: .init(), ratio: 0, worst: nil, pids: [], overSince: nil, lastAction: nil)
+        }
+        let u = CeilingUsage(memory: Double(a.footprint), cpu: a.cpuPercent, writes: a.diskWriteRate)
+        var ratio = 0.0, worst: CeilingResource?
+        for res in CeilingResource.allCases { if let l = r.limit(res), u[res] / l > ratio { ratio = u[res] / l; worst = res } }
+        let phase: CeilingStatus.Phase, action: String?
+        if !r.enabled { phase = .disabled; action = nil }
+        else if ratio >= 1 {
+            switch r.strictness {
+            case .ask where !answered.contains(r.id): phase = .asking; action = "asked"
+            case .slowDown: phase = .enforced; action = "slowed down"
+            default: phase = .enforced; action = answered.contains(r.id) ? "ignored" : "notified"
+            }
+        } else { phase = ratio >= r.warnFraction ? .approaching : .ok; action = nil }
+        return CeilingStatus(id: r.id, phase: phase, usage: u, ratio: ratio, worst: worst,
+                             pids: snap.processes.filter { $0.responsiblePID == a.responsiblePID }.map(\.pid),
+                             overSince: ratio >= 1 ? Date().addingTimeInterval(-12) : nil, lastAction: action)
     }
 
     private func processes(at t: TimeInterval) -> ProcessSnapshot {

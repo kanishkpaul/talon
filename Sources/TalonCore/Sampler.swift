@@ -11,6 +11,7 @@ public final class ProcessSampler {
         var start: UInt64
         var name: String
         var uid: UInt32
+        var parent: pid_t
         var responsible: pid_t
         var cpuNs: UInt64
         var diskWritten: UInt64
@@ -54,7 +55,7 @@ public final class ProcessSampler {
                 // New process (or a reused pid): resolve the slow facts once.
                 let info = ProcessSensor.info(pid)
                 entry = Known(start: raw.startTime, name: ProcessSensor.name(pid), uid: info?.uid ?? 0,
-                              responsible: ProcessSensor.responsible(pid), cpuNs: 0, diskWritten: 0)
+                              parent: info?.parent ?? 0, responsible: ProcessSensor.responsible(pid), cpuNs: 0, diskWritten: 0)
             }
             entry.cpuNs = raw.cpuNanoseconds
             entry.diskWritten = raw.diskWritten
@@ -62,7 +63,7 @@ public final class ProcessSampler {
             samples.append(ProcessSample(pid: pid, startTime: raw.startTime, responsiblePID: entry.responsible,
                                          uid: entry.uid, name: entry.name, footprint: raw.footprint,
                                          cpuPercent: max(0, cpuPct), diskWriteRate: max(0, writeRate),
-                                         diskWrittenTotal: raw.diskWritten))
+                                         diskWrittenTotal: raw.diskWritten, parentPID: entry.parent))
         }
         known = next
 

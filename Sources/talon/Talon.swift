@@ -12,8 +12,8 @@ struct Talon: ParsableCommand {
         commandName: "talon",
         abstract: "A firm grip on your Mac: ceilings, health and history.",
         version: "talon \(talonVersion) (protocol v\(talonProtocolVersion))",
-        subcommands: [Status.self, Top.self, Health.self, Run.self, Cap.self, Limit.self, Freeze.self, Thaw.self,
-                      History.self, Apps.self, Events.self, Daemon.self],
+        subcommands: [Status.self, Top.self, Health.self, Run.self, CeilingCommand.self, Cap.self, Limit.self, Freeze.self,
+                      Thaw.self, History.self, Apps.self, Events.self, Daemon.self],
         defaultSubcommand: Status.self
     )
 }
@@ -34,6 +34,20 @@ extension SystemSeries: ExpressibleByArgument {
 }
 
 extension AppMetric: ExpressibleByArgument {}
+
+extension Strictness: ExpressibleByArgument {
+    public init?(argument: String) { self.init(name: argument) }
+    public static var allValueStrings: [String] { ["watch", "warn", "ask", "slow", "pause", "quit", "hard"] }
+}
+
+/// `200%`, `150` → percent of one core (or a 0–100 fraction for --warn).
+struct Percent: ExpressibleByArgument {
+    var value: Double
+    init?(argument: String) {
+        guard let v = Double(argument.trimmingCharacters(in: CharacterSet(charactersIn: "% "))), v > 0, v.isFinite else { return nil }
+        value = v
+    }
+}
 
 struct TimeRange: ExpressibleByArgument {
     var seconds: TimeInterval
@@ -249,17 +263,29 @@ struct Run: ParsableCommand {
         their own budget in a later release.
         """)
 
-    @Option(name: .long, help: "Memory ceiling, e.g. 300M, 6G.") var mem: Bytes?
+    @Option(name: .long, help: "Kernel memory ceiling on the command itself, e.g. 300M, 6G.") var mem: Bytes?
+    @Option(name: .long, help: "Memory budget for the command and every process it spawns, e.g. 10G.") var treeMem: Bytes?
+    @Option(name: .long, help: "CPU budget for the whole tree, e.g. 200% (two cores).") var cpu: Percent?
+    @Option(name: .long, help: "What the budget does when crossed: watch, warn, slow, pause, quit, hard.") var strict: Strictness = .quit
+    @Option(name: .long, help: "How long the tree may stay over its budget before talon acts.") var grace = TimeRange(argument: "3s")!
     @Flag(name: .long, help: "Always print a summary (peak memory, runtime) when the command ends.") var report = false
     @Argument(parsing: .postTerminator, help: "The command, after --.") var command: [String] = []
 
     func validate() throws {
         if command.isEmpty { throw ValidationError("give the command after --, e.g. talon run --mem 6G -- python train.py") }
         if let m = mem, m.value < 16 << 20 { throw ValidationError("a ceiling under 16 MB would stop almost anything instantly") }
+        if let m = treeMem, m.value < 16 << 20 { throw ValidationError("a budget under 16 MB would stop almost anything instantly") }
+        if strict == .ask { throw ValidationError("`ask` needs the app; for talon run use watch, warn, slow, pause, quit or hard") }
     }
 
     func run() throws {
-        let launcher = CappedLauncher(memoryCeiling: mem?.value)
+        let name0 = (command[0] as NSString).lastPathComponent
+        let budget: Ceiling? = treeMem == nil && cpu == nil ? nil
+            : Ceiling(target: .tree(pid: 0, start: 0), label: name0, memory: treeMem?.value, cpu: cpu?.value,
+                      strictness: strict, grace: grace.seconds, quitGrace: 5)
+        let launcher = CappedLauncher(memoryCeiling: mem?.value, budget: budget) { msg in
+            stderr(Style.yellow("talon: ") + msg)
+        }
         let r: CappedLauncher.Result
         do { r = try launcher.run(command) } catch { stderr("talon: \(error)"); throw ExitCode(127) }
         let name = (command[0] as NSString).lastPathComponent
@@ -273,6 +299,154 @@ struct Run: ParsableCommand {
                 + " · \(TimeSpan.format(r.seconds))"))
         }
         throw ExitCode(r.exitCode)
+    }
+}
+
+// MARK: - ceilings
+
+struct CeilingCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "ceiling",
+        abstract: "Put a ceiling on an app or process, and choose how hard talon holds the line.",
+        discussion: """
+        Strictness, from gentlest: watch · warn · ask · slow · pause · quit · hard
+        Examples:
+          talon ceiling add Xcode --mem 8G --strict ask
+          talon ceiling add Safari --cpu 150% --strict slow
+          talon ceiling add 4242 --mem 2G --strict quit --grace 10s
+        """,
+        subcommands: [List.self, Add.self, Remove.self, Toggle.self, Answer.self],
+        defaultSubcommand: List.self)
+
+    static func fetch() throws -> ([Ceiling], [CeilingStatus]) {
+        guard case .ceilings(let rules, let states) = try request(.ceilings) else { return ([], []) }
+        return (rules, states)
+    }
+
+    /// An id prefix (as `list` prints it) or a label.
+    static func find(_ ref: String, in rules: [Ceiling]) throws -> Ceiling {
+        let matches = rules.filter { $0.id.uuidString.lowercased().hasPrefix(ref.lowercased()) || $0.label.lowercased() == ref.lowercased() }
+        guard matches.count == 1 else {
+            throw fail(TalonError(.notFound, matches.isEmpty ? "no ceiling matches \"\(ref)\" — see `talon ceiling list`" : "\"\(ref)\" matches several ceilings; use the id"))
+        }
+        return matches[0]
+    }
+
+    struct List: ParsableCommand {
+        static let configuration = CommandConfiguration(abstract: "Every ceiling, with live usage and state.")
+        @OptionGroup var output: JSONFlag
+
+        func run() throws {
+            let (rules, states) = try CeilingCommand.fetch()
+            if output.json {
+                struct Row: Encodable { var ceiling: Ceiling; var status: CeilingStatus? }
+                try JSON.print(rules.map { r in Row(ceiling: r, status: states.first { $0.id == r.id }) })
+                return
+            }
+            guard !rules.isEmpty else { print("no ceilings yet — try: talon ceiling add Xcode --mem 8G --strict ask"); return }
+            var t = Table(headers: ["ID", "TARGET", "CEILING", "STRICT", "USING", "STATE"], right: [4])
+            for r in rules {
+                let st = states.first { $0.id == r.id }
+                let using = st.flatMap { s in s.worst.map { "\($0.format(s.usage[$0])) (\(Int((s.ratio * 100).rounded()))%)" } } ?? "—"
+                let phase = st?.phase ?? .ok
+                let colored: String = switch phase {
+                case .ok: Style.green("ok")
+                case .approaching, .over: Style.yellow(phase.rawValue)
+                case .enforced, .asking: Style.red(phase.rawValue + (st?.lastAction.map { ": \($0)" } ?? ""))
+                case .gone, .disabled: Style.dim(phase.rawValue)
+                }
+                t.rows.append([String(r.id.uuidString.prefix(8)).lowercased(), truncate(r.label, 24), r.summary, r.strictness.label, using, colored])
+            }
+            print(t.render())
+        }
+    }
+
+    struct Add: ParsableCommand {
+        static let configuration = CommandConfiguration(abstract: "Add (or replace) a ceiling on an app, a process, or a process tree.")
+        @Argument(help: "An app name (Xcode), an app bundle path, or a pid.") var target: String
+        @Flag(name: .long, help: "With a pid: include every process it spawns.") var tree = false
+        @Option(name: .long, help: "Memory ceiling, e.g. 8G.") var mem: Bytes?
+        @Option(name: .long, help: "CPU ceiling in percent of one core, e.g. 200%.") var cpu: Percent?
+        @Option(name: .long, help: "SSD write-rate ceiling per second, e.g. 50M.") var writes: Bytes?
+        @Option(name: .long, help: "watch, warn, ask, slow, pause, quit or hard.") var strict: Strictness = .warn
+        @Option(name: .long, help: "Warn from this share of the ceiling, e.g. 90%.") var warn = Percent(argument: "90")!
+        @Option(name: .long, help: "How long it may stay over before talon acts.") var grace = TimeRange(argument: "5s")!
+        @Option(name: .long, help: "Quit: time between SIGTERM and SIGKILL.") var quitGrace = TimeRange(argument: "10s")!
+
+        func validate() throws {
+            if mem == nil && cpu == nil && writes == nil { throw ValidationError("give at least one of --mem, --cpu, --writes") }
+        }
+
+        func run() throws {
+            let (rules, _) = try CeilingCommand.fetch()
+            let (resolved, label) = try resolveTarget()
+            // One ceiling per target: adding again replaces it.
+            let existing = rules.first { $0.target == resolved }
+            let c = Ceiling(id: existing?.id ?? UUID(), target: resolved, label: label, memory: mem?.value, cpu: cpu?.value,
+                            writeRate: writes.map { Double($0.value) }, strictness: strict, warnFraction: min(warn.value, 100) / 100,
+                            grace: grace.seconds, quitGrace: quitGrace.seconds, createdAt: existing?.createdAt ?? Date())
+            if case .ok(let msg) = try request(.setCeiling(c)) { print(Style.green("✓ ") + msg) }
+            if strict == .ask { print(Style.dim("  the Talon app shows the ask panel; answer here with `talon ceiling answer \(label) raise|pause|quit|ignore`")) }
+            if strict == .hardCap, mem != nil { print(Style.dim("  kernel limits on running apps need talond as root; as an agent talon stops the largest process instead")) }
+        }
+
+        private func resolveTarget() throws -> (CeilingTarget, String) {
+            if let pid = Int32(target) {
+                guard let raw = ProcessSensor.read(pid) else { throw fail(TalonError(.notFound, "no process \(pid) you can see")) }
+                let name = ProcessSensor.name(pid)
+                return (tree ? .tree(pid: pid, start: raw.startTime) : .process(pid: pid, start: raw.startTime), name)
+            }
+            if target.hasSuffix(".app") {
+                let path = (target as NSString).standardizingPath
+                return (.app(key: path), ((path as NSString).lastPathComponent as NSString).deletingPathExtension)
+            }
+            let sampler = ProcessSampler()
+            let apps = sampler.sweep().apps
+            let q = target.lowercased()
+            let hits = Dictionary(grouping: apps.filter { $0.name.lowercased() == q }, by: \.key)
+            if hits.count == 1, let a = hits.values.first?.first { return (.app(key: a.key), a.name) }
+            if hits.count > 1 { throw fail(TalonError(.badRequest, "\(target) matches several apps: \(hits.keys.sorted().joined(separator: ", ")) — pass the path")) }
+            let fuzzy = Set(apps.filter { $0.name.lowercased().contains(q) }.map(\.name)).sorted()
+            throw fail(TalonError(.notFound, "no running app called \(target)" + (fuzzy.isEmpty ? " — pass its .app path" : ". Did you mean: \(fuzzy.prefix(5).joined(separator: ", "))?")))
+        }
+    }
+
+    struct Remove: ParsableCommand {
+        static let configuration = CommandConfiguration(commandName: "rm", abstract: "Remove a ceiling (and undo any slow-down it applied).")
+        @Argument(help: "Ceiling id prefix or label.") var ceiling: String
+        func run() throws {
+            let c = try CeilingCommand.find(ceiling, in: CeilingCommand.fetch().0)
+            if case .ok(let msg) = try request(.removeCeiling(id: c.id)) { print(Style.green("✓ ") + msg) }
+        }
+    }
+
+    struct Toggle: ParsableCommand {
+        static let configuration = CommandConfiguration(commandName: "toggle", abstract: "Turn a ceiling off or back on.")
+        @Argument(help: "Ceiling id prefix or label.") var ceiling: String
+        func run() throws {
+            var c = try CeilingCommand.find(ceiling, in: CeilingCommand.fetch().0)
+            c.enabled.toggle()
+            if case .ok(let msg) = try request(.setCeiling(c)) { print(Style.green("✓ ") + msg) }
+        }
+    }
+
+    struct Answer: ParsableCommand {
+        static let configuration = CommandConfiguration(abstract: "Answer an Ask ceiling: raise, pause, quit or ignore.")
+        @Argument(help: "Ceiling id prefix or label.") var ceiling: String
+        @Argument(help: "raise, pause, quit or ignore.") var choice: String
+        @Option(name: .long, help: "With raise: multiply the ceiling by this.") var by = 1.25
+
+        func run() throws {
+            let c = try CeilingCommand.find(ceiling, in: CeilingCommand.fetch().0)
+            let answer: AskChoice = switch choice.lowercased() {
+            case "raise": .raise(by: by)
+            case "pause": .pause
+            case "quit": .quit
+            case "ignore": .ignore
+            default: throw ValidationError("answer raise, pause, quit or ignore")
+            }
+            if case .ok(let msg) = try request(.answer(id: c.id, choice: answer)) { print(Style.green("✓ ") + msg) }
+        }
     }
 }
 

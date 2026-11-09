@@ -11,12 +11,13 @@ public struct ProcessSample: Codable, Sendable, Hashable {
     public var cpuPercent: Double         // of one core, so 0…(cores × 100)
     public var diskWriteRate: Double      // bytes/s since the previous sweep
     public var diskWrittenTotal: UInt64   // bytes over the process lifetime
+    public var parentPID: Int32           // for process-tree budgets
 
     public init(pid: Int32, startTime: UInt64, responsiblePID: Int32, uid: UInt32, name: String, footprint: UInt64,
-                cpuPercent: Double, diskWriteRate: Double, diskWrittenTotal: UInt64) {
+                cpuPercent: Double, diskWriteRate: Double, diskWrittenTotal: UInt64, parentPID: Int32 = 0) {
         self.pid = pid; self.startTime = startTime; self.responsiblePID = responsiblePID; self.uid = uid
         self.name = name; self.footprint = footprint; self.cpuPercent = cpuPercent
-        self.diskWriteRate = diskWriteRate; self.diskWrittenTotal = diskWrittenTotal
+        self.diskWriteRate = diskWriteRate; self.diskWrittenTotal = diskWrittenTotal; self.parentPID = parentPID
     }
 }
 

@@ -1,5 +1,6 @@
 import AppKit
 import Observation
+import UserNotifications
 import TalonIPC
 import TalonModel
 
@@ -25,6 +26,15 @@ final class LiveModel {
     private(set) var health: HealthReport?
     private(set) var topWriters: [AppTotal] = []
     private(set) var isDemo: Bool
+    private(set) var ceilings: [Ceiling] = []
+    private(set) var ceilingStates: [UUID: CeilingStatus] = [:]
+    /// Each ceiling's usage over the last five minutes, for the drag-to-set chart.
+    private(set) var ceilingHistory: [UUID: [(Date, CeilingUsage)]] = [:]
+    /// Set by views that want the window to switch pane (e.g. "Add ceiling" in Processes).
+    var requestedPane: MainWindow.Pane?
+    var selectedCeiling: UUID?
+
+    var asking: [Ceiling] { ceilings.filter { ceilingStates[$0.id]?.phase == .asking } }
 
     var latest: SystemSample? { recent.last ?? status?.latest }
 
@@ -76,6 +86,7 @@ final class LiveModel {
             do throws(TalonError) {
                 var f = Fetched()
                 if case .status(let s) = try source.send(.status) { f.status = s }
+                if case .ceilings(let c, let st) = try source.send(.ceilings) { f.ceilings = (c, st) }
                 if wantsProcesses, case .processes(let p) = try source.send(.processes) { f.snapshot = p }
                 if wantsSlow {
                     if case .health(let h) = try source.send(.health) { f.health = h }
@@ -98,6 +109,7 @@ final class LiveModel {
                 }
             }
             if let p = f.snapshot { snapshot = p }
+            if let (rules, states) = f.ceilings { updateCeilings(rules, states) }
             if wantsSlow, f.health != nil {
                 health = f.health
                 topWriters = f.writers
@@ -116,6 +128,78 @@ final class LiveModel {
         var snapshot: ProcessSnapshot?
         var health: HealthReport?
         var writers: [AppTotal] = []
+        var ceilings: ([Ceiling], [CeilingStatus])?
+    }
+
+    // MARK: - Ceilings
+
+    private func updateCeilings(_ rules: [Ceiling], _ states: [CeilingStatus]) {
+        let old = ceilingStates
+        ceilings = rules
+        ceilingStates = Dictionary(uniqueKeysWithValues: states.map { ($0.id, $0) })
+        let now = Date()
+        for st in states {
+            var h = ceilingHistory[st.id] ?? []
+            h.append((now, st.usage))
+            h.removeAll { now.timeIntervalSince($0.0) > 300 }
+            ceilingHistory[st.id] = h
+        }
+        ceilingHistory = ceilingHistory.filter { ceilingStates[$0.key] != nil }
+        for rule in rules { notifyIfNeeded(rule, from: old[rule.id]?.phase, to: ceilingStates[rule.id]) }
+    }
+
+    /// Warn and stricter rungs notify when a ceiling starts approaching and when talon acts.
+    private func notifyIfNeeded(_ rule: Ceiling, from: CeilingStatus.Phase?, to status: CeilingStatus?) {
+        guard let status, let from, from != status.phase, rule.strictness >= .warn, !isDemo else { return }
+        let body: String
+        switch status.phase {
+        case .approaching: body = "Approaching its ceiling — \(Self.describe(rule, status))."
+        case .enforced: body = "Over its ceiling — \(Self.describe(rule, status)). Talon \(status.lastAction ?? "acted")."
+        case .asking: body = "Over its ceiling — \(Self.describe(rule, status)). Raise it, pause, or quit?"
+        default: return
+        }
+        let content = UNMutableNotificationContent()
+        content.title = rule.label
+        content.body = body
+        let center = UNUserNotificationCenter.current()
+        center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
+            guard granted else { return }
+            center.add(UNNotificationRequest(identifier: "\(rule.id)-\(status.phase.rawValue)", content: content, trigger: nil))
+        }
+    }
+
+    static func describe(_ rule: Ceiling, _ s: CeilingStatus) -> String {
+        guard let w = s.worst, let l = rule.limit(w) else { return "" }
+        return "\(w.format(s.usage[w])) of \(w.format(l))"
+    }
+
+    func save(_ c: Ceiling) async -> Result<String, TalonError> {
+        if let i = ceilings.firstIndex(where: { $0.id == c.id }) { ceilings[i] = c } else { ceilings.append(c) }  // optimistic
+        return await perform(.setCeiling(c))
+    }
+
+    func remove(_ c: Ceiling) async -> Result<String, TalonError> {
+        ceilings.removeAll { $0.id == c.id }
+        return await perform(.removeCeiling(id: c.id))
+    }
+
+    func answer(_ c: Ceiling, _ choice: AskChoice) async -> Result<String, TalonError> {
+        await perform(.answer(id: c.id, choice: choice))
+    }
+
+    /// A starting ceiling for an app: 1.5× what it uses now, rounded up, Warn.
+    func newCeiling(for app: AppUsage) -> Ceiling {
+        if let existing = ceilings.first(where: { $0.target == .app(key: app.key) }) { return existing }
+        let step: UInt64 = 256 << 20
+        let mem = max(step, (UInt64(Double(app.footprint) * 1.5) + step - 1) / step * step)
+        return Ceiling(target: .app(key: app.key), label: app.name, memory: mem, strictness: .warn)
+    }
+
+    func open(ceilingFor app: AppUsage) {
+        let c = newCeiling(for: app)
+        selectedCeiling = c.id
+        requestedPane = .ceilings
+        if !ceilings.contains(where: { $0.id == c.id }) { Task { _ = await save(c) } }
     }
 
     private func ensureSource() async -> (any TalonSource)? {

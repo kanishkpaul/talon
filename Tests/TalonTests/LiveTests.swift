@@ -194,3 +194,99 @@ import TalonSensors
         #expect(ev.map(\.kind).contains(.daemonStarted))
     }
 }
+
+/// Ceilings acting on real processes through the real daemon logic.
+@Suite(.serialized) struct CeilingLiveTests {
+    /// dd with a 64 MB block buffer: ~64 MB resident, busy, runs until stopped.
+    func spawnHog() throws -> Process {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/dd")
+        p.arguments = ["if=/dev/zero", "of=/dev/null", "bs=64m"]
+        p.standardError = FileHandle.nullDevice
+        try p.run()
+        return p
+    }
+
+    func wait(_ seconds: Double, until: () -> Bool) async -> Bool {
+        let end = Date().addingTimeInterval(seconds)
+        while Date() < end {
+            if until() { return true }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        return until()
+    }
+
+    @Test func pauseThenRemove() async throws {
+        let h = DaemonXPCTests.Harness()
+        let hog = try spawnHog()
+        defer { hog.terminate(); kill(hog.processIdentifier, SIGCONT) }
+        let pid = hog.processIdentifier
+        try await Task.sleep(for: .milliseconds(300))
+        let start = try #require(ProcessSensor.read(pid)?.startTime)
+
+        let rule = Ceiling(target: .process(pid: pid, start: start), label: "dd", memory: 32 << 20, strictness: .pause, grace: 0)
+        guard case .ok = try h.client.send(.setCeiling(rule)) else { Issue.record("set failed"); return }
+        #expect(await wait(4) { ProcessSensor.info(pid)?.stopped == true })
+
+        guard case .ceilings(let rules, let states) = try h.client.send(.ceilings) else { Issue.record("no ceilings"); return }
+        #expect(rules.map(\.id) == [rule.id])
+        #expect(states.first?.phase == .enforced)
+        #expect(states.first?.lastAction == "paused")
+        guard case .status(let st) = try h.client.send(.status) else { return }
+        #expect(st.frozen.contains(pid))          // so shutdown would resume it
+
+        guard case .ok = try h.client.send(.removeCeiling(id: rule.id)) else { Issue.record("remove failed"); return }
+        guard case .ceilings(let after, _) = try h.client.send(.ceilings) else { return }
+        #expect(after.isEmpty)
+    }
+
+    @Test func askThenQuit() async throws {
+        let h = DaemonXPCTests.Harness()
+        let hog = try spawnHog()
+        defer { hog.terminate() }
+        let pid = hog.processIdentifier
+        try await Task.sleep(for: .milliseconds(300))
+        let start = try #require(ProcessSensor.read(pid)?.startTime)
+
+        let rule = Ceiling(target: .process(pid: pid, start: start), label: "dd", memory: 32 << 20, strictness: .ask, grace: 0)
+        _ = try h.client.send(.setCeiling(rule))
+        let asked = await wait(4) {
+            if case .ceilings(_, let s)? = try? h.client.send(.ceilings) { return s.first?.phase == .asking }
+            return false
+        }
+        #expect(asked)
+        _ = try h.client.send(.answer(id: rule.id, choice: .quit))
+        #expect(await wait(4) { !hog.isRunning })
+        #expect(hog.terminationReason == .uncaughtSignal && hog.terminationStatus == SIGTERM)
+    }
+
+    @Test func refusesCeilingsOnOtherUsersProcesses() throws {
+        let h = DaemonXPCTests.Harness()
+        let rule = Ceiling(target: .process(pid: 1, start: 0), label: "launchd", memory: 1 << 30, strictness: .quit)
+        #expect(throws: TalonError.self) { try h.client.send(.setCeiling(rule)) }
+        let empty = Ceiling(target: .app(key: "/X.app"), label: "X", strictness: .quit)
+        #expect(throws: TalonError.self) { try h.client.send(.setCeiling(empty)) }
+    }
+
+    @Test func throttleIsReversible() throws {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        p.arguments = ["10"]
+        try p.run()
+        defer { p.terminate() }
+        let e = Enforcer(policy: TargetPolicy(allowedUID: getuid()))
+        // getpriority() doesn't report Darwin background state; the scheduler priority does (31 → 4).
+        func priority() -> Int32 {
+            var info = proc_taskinfo()
+            _ = proc_pidinfo(p.processIdentifier, PROC_PIDTASKINFO, 0, &info, Int32(MemoryLayout<proc_taskinfo>.size))
+            return info.pti_priority
+        }
+        let normal = priority()
+        guard case .done = e.throttle(caller: getuid(), pid: p.processIdentifier, on: true) else { Issue.record("throttle on failed"); return }
+        usleep(50_000)
+        #expect(priority() < normal)
+        guard case .done = e.throttle(caller: getuid(), pid: p.processIdentifier, on: false) else { Issue.record("throttle off failed"); return }
+        usleep(50_000)
+        #expect(priority() == normal)
+    }
+}
