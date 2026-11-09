@@ -141,6 +141,10 @@ import TalonSensors
         }
         #expect(hist.tier == .live)
         #expect(hist.points.count >= 2)
+
+        guard case .health(let health) = try h.client.send(.health) else { Issue.record("no health"); return }
+        #expect(health.memory != nil)
+        #expect(health.disk != nil)
     }
 
     @Test func freezeThawAndShutdownSafety() async throws {

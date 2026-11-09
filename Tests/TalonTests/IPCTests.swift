@@ -5,7 +5,7 @@ import TalonModel
 
 @Suite struct CodecTests {
     @Test(arguments: [
-        TalonRequest.hello, .status, .processes, .history(series: .cpuTemp, range: 3600, maxPoints: 120),
+        TalonRequest.hello, .status, .processes, .health, .history(series: .cpuTemp, range: 3600, maxPoints: 120),
         .topApps(range: 86_400, by: .disk, limit: 10), .events(range: 60, limit: 5),
         .capMemory(pid: 42, bytes: 6 << 30), .memoryLimit(pid: 42), .freeze(pid: 7), .thaw(pid: 7),
     ])

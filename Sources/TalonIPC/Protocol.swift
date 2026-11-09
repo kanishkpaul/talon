@@ -17,6 +17,7 @@ public enum TalonRequest: Codable, Sendable, Equatable {
     case hello
     case status
     case processes
+    case health
     case history(series: SystemSeries, range: TimeInterval, maxPoints: Int)
     case topApps(range: TimeInterval, by: AppMetric, limit: Int)
     case events(range: TimeInterval, limit: Int)
@@ -30,6 +31,7 @@ public enum TalonReply: Codable, Sendable {
     case hello(protocolVersion: Int, daemonVersion: String)
     case status(DaemonStatus)
     case processes(ProcessSnapshot)
+    case health(HealthReport)
     case history(HistorySeries)
     case topApps([AppTotal])
     case events([TalonEvent])

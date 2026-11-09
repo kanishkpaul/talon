@@ -1,0 +1,48 @@
+# XcodeGen spec for the app. Generate with `make app` (the .xcodeproj is not committed).
+# The app links only TalonModel + TalonIPC: it never touches sensors, private API or the database —
+# everything comes from talond over XPC.
+name: Talon
+options:
+  bundleIdPrefix: dev.kanishk
+  deploymentTarget:
+    macOS: "26.0"
+  createIntermediateGroups: true
+packages:
+  TalonKit:
+    path: ..
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MACOSX_DEPLOYMENT_TARGET: "26.0"
+    CODE_SIGN_IDENTITY: "-"
+    CODE_SIGN_STYLE: Manual
+    DEVELOPMENT_TEAM: ""
+    ENABLE_HARDENED_RUNTIME: YES
+    SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor
+    SWIFT_APPROACHABLE_CONCURRENCY: YES
+    DEAD_CODE_STRIPPING: YES
+targets:
+  TalonApp:
+    type: application
+    platform: macOS
+    sources: [TalonApp]
+    dependencies:
+      - package: TalonKit
+        product: TalonModel
+      - package: TalonKit
+        product: TalonIPC
+    info:
+      path: TalonApp/Info.plist
+      properties:
+        CFBundleName: Talon
+        CFBundleDisplayName: Talon
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        LSUIElement: true
+        LSApplicationCategoryType: public.app-category.utilities
+        NSHumanReadableCopyright: "A personal project, built for exactly one Mac."
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.kanishk.talon.app
+        PRODUCT_NAME: Talon
+        GENERATE_INFOPLIST_FILE: NO

@@ -203,6 +203,10 @@ public final class Daemon: @unchecked Sendable {
             guard let p = latestProcesses else { return .error(TalonError(.notFound, "no sweep yet — try again in a second")) }
             return .processes(p)
 
+        case .health:
+            // Read off the state queue's hot path would be nicer; it's ~20 ms and requested once a minute.
+            return .health(HealthProbe.report())
+
         case .history(let series, let range, let maxPoints):
             return .history(history(series, range: range, maxPoints: max(2, min(maxPoints, 5000))))
 

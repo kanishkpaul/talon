@@ -24,6 +24,7 @@
   <a href="#proven-on-the-metal">Phase 0 results</a> ·
   <a href="#architecture">Architecture</a> ·
   <a href="#roadmap">Roadmap</a> ·
+  <a href="#the-app">The app</a> ·
   <a href="#build-and-run">Run it</a>
 </p>
 
@@ -192,7 +193,8 @@ Why this stack, and what was ruled out: [`docs/reports/talon-stack-choice.md`](d
   - [x] TalonKit package: C shim, model, IPC schema, sensors, sampler, tiered aggregator, policy
   - [x] `talond`: 1 Hz sweep, SQLite history (10 s / 1 min / 1 h + events), XPC, cap / freeze / thaw
   - [x] `talon` CLI: `status`, `top`, `health`, `run --mem`, `cap`, `freeze`, `history`, `apps`, `events`
-  - [ ] Menu bar panel, Overview and Processes (XcodeGen app)
+  - [x] Menu bar panel, Overview and Processes (XcodeGen app on an AppKit spine)
+  - [ ] Run the app against a live `talond` (agent or root daemon) and tune it on real data
 - [ ] **Phase 2** — ceilings, the strictness ladder, drag-to-set, `talon run`
 - [ ] **Phase 3** — Health and History
 - [ ] **Phase 4** — scalpel: exact-reclaim scanner, findings, holding area, growth watch
@@ -200,6 +202,26 @@ Why this stack, and what was ruled out: [`docs/reports/talon-stack-choice.md`](d
 - [ ] **Phase 6** — motion, haptics, accessibility, the last 10 %
 
 <br>
+
+## The app
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/panel-dark.png">
+    <img alt="The talon menu bar panel" src="docs/screenshots/panel-light.png" width="360">
+  </picture>
+  <br><sub>The menu bar panel (rendered with <code>--demo</code> data).</sub>
+</p>
+
+A bird in the menu bar that stays quiet until something needs attention: it turns orange under memory or thermal pressure, red when either is critical. Click it for the panel: six live readings with the last five minutes behind each, and the top apps. The window adds **Overview** (history from 15 minutes to 30 days, with min–max bands so spikes survive downsampling; battery, SSD, thermal and storage health; who wrote to the SSD today) and **Processes** (every process grouped under its app, filterable, sortable, with pause, resume and memory ceilings from the context menu).
+
+The app links only `TalonModel` and `TalonIPC`. Every number comes from `talond` over XPC, so it never needs sensors, private APIs or the database.
+
+```bash
+make app        # build .build/app/Build/Products/Release/Talon.app
+make app-demo   # run it on synthetic data, window open, labelled DEMO DATA
+make snapshots  # render panel, Overview and Processes (light + dark) to PNGs, no screen access needed
+```
 
 ## Build and run
 
@@ -271,6 +293,9 @@ talon/
 │   ├── talond/          the helper's entry point
 │   └── talon/           the CLI
 ├── Tests/TalonTests/    Swift Testing: units, policy table, store, codec, live sensors, XPC
+├── App/
+│   ├── project.yml      XcodeGen spec (the .xcodeproj is generated, not committed)
+│   └── TalonApp/        menu bar panel, Overview, Processes (NSOutlineView), demo source, snapshots
 ├── launchd/             LaunchDaemon and LaunchAgent plists
 ├── assets/              banner art
 ├── docs/

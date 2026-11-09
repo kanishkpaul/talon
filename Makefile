@@ -2,6 +2,7 @@
 #
 #   make                 build release binaries
 #   make test            run the test suite
+#   make app             build the menu bar app (make app-demo: run it on synthetic data)
 #   make agent           run talond as a per-user LaunchAgent (no admin; your processes only)
 #   make build && sudo make install
 #                        run talond as a root LaunchDaemon (every process; kernel ceilings on running apps)
@@ -18,7 +19,7 @@ HELPER    := /Library/PrivilegedHelperTools/$(LABEL)
 DAEMON_PLIST := /Library/LaunchDaemons/$(LABEL).plist
 PREFIX    ?= /usr/local
 
-.PHONY: all build test sign agent unagent install uninstall logs spikes clean
+.PHONY: all build test sign app app-demo snapshots agent unagent install uninstall logs spikes clean
 
 all: build
 
@@ -34,6 +35,25 @@ sign:
 
 test:
 	swift test
+
+APP := .build/app/Build/Products/Release/Talon.app
+
+# The menu bar app (XcodeGen + xcodebuild). Links only TalonModel + TalonIPC.
+app:
+	cd App && xcodegen generate --quiet
+	xcodebuild -project App/Talon.xcodeproj -scheme TalonApp -configuration Release \
+		-derivedDataPath .build/app -quiet build
+	@echo "built $(APP) · open it, or: make app-demo"
+
+app-demo: app
+	open -n $(APP) --args --demo --open
+
+# Render the panel, Overview and Processes (light + dark) to .build/snapshots without touching the
+# screen; the panel shots are copied into docs/screenshots for the README.
+snapshots: app
+	rm -rf .build/snapshots
+	$(APP)/Contents/MacOS/Talon --demo --snapshot .build/snapshots
+	mkdir -p docs/screenshots && cp .build/snapshots/panel-*.png docs/screenshots/
 
 agent: build
 	@mkdir -p "$(AGENT_DIR)" "$(HOME)/Library/LaunchAgents"
