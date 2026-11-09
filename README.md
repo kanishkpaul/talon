@@ -10,7 +10,7 @@
   <img alt="macOS 27" src="https://img.shields.io/badge/macOS-27-1d1d1f?style=flat-square&logo=apple&logoColor=white">
   <img alt="Apple silicon M5" src="https://img.shields.io/badge/Apple%20silicon-M5-0A84FF?style=flat-square">
   <img alt="Swift 6.4" src="https://img.shields.io/badge/Swift-6.4-F05138?style=flat-square&logo=swift&logoColor=white">
-  <img alt="status" src="https://img.shields.io/badge/status-phase%200%20complete-30D158?style=flat-square">
+  <img alt="status" src="https://img.shields.io/badge/status-phase%201%20in%20progress-0A84FF?style=flat-square">
   <img alt="personal" src="https://img.shields.io/badge/built%20for-one%20mac-8E8E93?style=flat-square">
 </p>
 
@@ -24,7 +24,7 @@
   <a href="#proven-on-the-metal">Phase 0 results</a> ·
   <a href="#architecture">Architecture</a> ·
   <a href="#roadmap">Roadmap</a> ·
-  <a href="#run-the-spikes">Run it</a>
+  <a href="#build-and-run">Run it</a>
 </p>
 
 <br>
@@ -69,10 +69,11 @@ Every rule also has a warning threshold and a grace period, so a one-second spik
 ### For experiments
 
 ```bash
-talon run --mem 6G --cpu 200% --strict ask -- python train.py   # planned CLI
+talon run --mem 6G -- python train.py                           # works today: kernel-enforced, no admin
+talon run --mem 6G --cpu 200% --strict ask -- python train.py   # planned
 ```
 
-A hard memory ceiling on the command and a shared budget across every worker it spawns.
+A hard memory ceiling on the command today; a shared budget across every worker it spawns is next.
 
 ### scalpel: storage, cut precisely
 
@@ -188,6 +189,10 @@ Why this stack, and what was ruled out: [`docs/reports/talon-stack-choice.md`](d
 - [x] **Research** — language and stack, and the hardware itself
 - [ ] **Phase 0.5** — settle the open questions: XPC peer requirements, widgets under personal signing, live-table and chart performance, a 24-hour write soak, scalpel scan speed and exact-reclaim accuracy
 - [ ] **Phase 1** — `talond`, the sampler, tiered history, the menu bar panel, Overview and Processes
+  - [x] TalonKit package: C shim, model, IPC schema, sensors, sampler, tiered aggregator, policy
+  - [x] `talond`: 1 Hz sweep, SQLite history (10 s / 1 min / 1 h + events), XPC, cap / freeze / thaw
+  - [x] `talon` CLI: `status`, `top`, `health`, `run --mem`, `cap`, `freeze`, `history`, `apps`, `events`
+  - [ ] Menu bar panel, Overview and Processes (XcodeGen app)
 - [ ] **Phase 2** — ceilings, the strictness ladder, drag-to-set, `talon run`
 - [ ] **Phase 3** — Health and History
 - [ ] **Phase 4** — scalpel: exact-reclaim scanner, findings, holding area, growth watch
@@ -196,38 +201,83 @@ Why this stack, and what was ruled out: [`docs/reports/talon-stack-choice.md`](d
 
 <br>
 
-## Run the spikes
+## Build and run
+
+Needs Xcode 27 (Swift 6.4). Everything below runs as you; only `sudo make install` needs admin.
 
 ```bash
-cd spikes
-./build.sh
+make                       # release build of talon + talond, ad-hoc signed
+make test                  # 47 tests, including real XPC round-trips and a kernel ceiling
 
+.build/release/talon                      # status: CPU, memory, swap, thermals, power, free space
+.build/release/talon top --sort disk      # who's writing to the SSD right now, grouped by app
+.build/release/talon health               # battery, SSD SMART, 37 sensors — straight from the hardware
+.build/release/talon run --mem 2G -- cmd  # kernel memory ceiling at launch, no admin
+```
+
+History, `cap`, `freeze` and `apps` talk to `talond`. Run it one of two ways:
+
+| | Command | Sees | Can |
+|---|---|---|---|
+| **User agent** | `make agent` · `make unagent` | your processes | history, freeze / thaw |
+| **Root daemon** | `make build && sudo make install` · `sudo make uninstall` | every process | all of that, plus kernel ceilings on running apps |
+
+```bash
+talon daemon                          # is it running, and what does it cost?
+talon history cpuTemp --range 24h     # sparkline + min / avg / max from the tiered history
+talon apps --range 7d --by disk       # which apps wrote the most
+talon freeze 4242 && talon thaw 4242  # pause in place; talond resumes it if talond ever exits
+talon cap 4242 --mem 2G               # root daemon only
+make logs                             # follow talond's log
+```
+
+Measured on this Mac: release `talond` costs **~0.5 % CPU and 5.6 MB** sweeping ~570 processes once a second with every sensor on, and commits history once a minute.
+
+<details>
+<summary><b>What building phase 1 changed</b></summary>
+<br>
+
+- `PowerTelemetryData.SystemLoad` goes stale on battery (0.5 W while the pack supplied 3.6 W), so system power is voltage × current, minus what goes into the battery when plugged in.
+- The per-app minute table holds the top 40 apps by CPU, by memory *and* by writes, so ~80–110 rows a minute here rather than 40.
+- The daemon's logic lives in a library (`TalonDaemon`), so tests drive the real request handling over a real anonymous XPC connection without launchd or root.
+
+</details>
+
+### The phase 0 spikes
+
+```bash
+cd spikes && ./build.sh
 ./1-sampler/sampler --hz 1 --fast-hz 4 --watch 5   # sweep every process, report overhead
 ./2-memcap/memcap 300                              # hard and soft memory ceilings
 ./3-thermal/thermal                                # sensors, pressure, clocks (try: thermal 300)
 ./4-health/health                                  # SSD SMART + battery
-
-sudo ./root-tests.sh                               # installs talond, tests it, removes it
+sudo ./root-tests.sh                               # installs the spike helper, tests it, removes it
 ```
 
 ## Repository
 
 ```
 talon/
+├── Package.swift        TalonKit: libraries + talond + talon
+├── Makefile             build · test · sign · agent · install · logs
+├── Sources/
+│   ├── TalonPrivate/    C shim: memorystatus, jetsam spawn, responsible pid, HID temps, NVMe SMART
+│   ├── TalonModel/      Sendable value types shared by everything (and later the app)
+│   ├── TalonIPC/        TalonRequest / TalonReply, the wire codec, the XPC client
+│   ├── TalonSensors/    processes, memory, CPU, disk, thermal, battery, SSD
+│   ├── TalonCore/       sampler, tiered aggregator, policy, enforcer, capped launcher
+│   ├── TalonStore/      GRDB schema, tiers, retention (daemon-only)
+│   ├── TalonDaemon/     talond's state, request handling, XPC listener
+│   ├── talond/          the helper's entry point
+│   └── talon/           the CLI
+├── Tests/TalonTests/    Swift Testing: units, policy table, store, codec, live sensors, XPC
+├── launchd/             LaunchDaemon and LaunchAgent plists
 ├── assets/              banner art
 ├── docs/
 │   ├── scalpel.md       storage analyser and cleaner design
 │   ├── reports/         stack choice · M5 Air health and longevity
 │   └── research/        the notes behind the reports
 └── spikes/              phase 0 — every risky API, tested on this Mac
-    ├── 1-sampler/       process sweep and overhead
-    ├── 2-memcap/        hard and soft memory ceilings
-    ├── 3-thermal/       sensors, thermal pressure, live clocks
-    ├── 4-health/        NVMe SMART and battery
-    ├── 5-helper/        talond — root daemon over XPC
-    ├── build.sh
-    ├── root-tests.sh
-    └── FINDINGS.md
 ```
 
 ## Principles

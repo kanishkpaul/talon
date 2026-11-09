@@ -15,3 +15,6 @@ spikes/3-thermal/thermal
 spikes/4-health/health
 spikes/5-helper/talond
 spikes/5-helper/helper-client
+
+# SwiftPM
+.swiftpm/

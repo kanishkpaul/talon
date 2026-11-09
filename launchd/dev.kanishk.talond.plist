@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- talond as a root LaunchDaemon. `sudo make install` fills in __UID__. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>dev.kanishk.talond</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Library/PrivilegedHelperTools/dev.kanishk.talond</string>
+    <string>--allowed-uid</string><string>__UID__</string>
+  </array>
+  <key>MachServices</key><dict><key>dev.kanishk.talond</key><true/></dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ProcessType</key><string>Adaptive</string>
+  <key>StandardErrorPath</key><string>/var/log/dev.kanishk.talond.log</string>
+</dict>
+</plist>
