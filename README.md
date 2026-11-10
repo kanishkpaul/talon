@@ -248,7 +248,9 @@ Why this stack, and what was ruled out: [`docs/reports/talon-stack-choice.md`](d
 
 A bird in the menu bar that stays quiet until something needs attention: it turns orange under memory or thermal pressure or an approaching ceiling, red when either is critical or a ceiling is waiting for an answer. Click it for the panel: six live readings with the last five minutes behind each, and the top apps. The window has six panes (⌘1–6): **Overview** (history from 15 minutes to 30 days with min–max bands, P-cluster speed, health cards, who wrote to the SSD today), **Care**, **Processes** (every process grouped under its app, with pause, resume and ceilings from the context menu), **Ceilings**, **History** (battery and SSD trends, one app over time, the event timeline) and **Scalpel**.
 
-The app links only `TalonModel` and `TalonIPC`. Every number comes from `talond` over XPC, so it never needs sensors, private APIs or the database.
+The app receives hardware readings and history from `talond` over XPC. Scalpel scans run as your user through `TalonScalpel`.
+
+Install XcodeGen with `brew install xcodegen` if you want to build the menu bar app.
 
 ```bash
 make app        # build .build/app/Build/Products/Release/Talon.app
@@ -258,11 +260,11 @@ make snapshots  # render panel, Overview and Processes (light + dark) to PNGs, n
 
 ## Build and run
 
-Needs Xcode 27 (Swift 6.4). Everything below runs as you; only `sudo make install` needs admin.
+Use an Apple silicon Mac with macOS 27 and Xcode 27 (Swift 6.4). Talon's hardware readings were developed on an M5 MacBook Air. The build, test and demo commands run without administrator access.
 
 ```bash
 make                       # release build of talon + talond, ad-hoc signed
-make test                  # 85+ tests, incl. real XPC, kernel ceilings, and ceilings pausing / quitting real processes
+make test                  # includes XPC, kernel ceilings and tests with disposable subprocesses
 
 .build/release/talon                      # status: CPU, memory, swap, thermals, power, free space
 .build/release/talon top --sort disk      # who's writing to the SSD right now, grouped by app
@@ -270,12 +272,14 @@ make test                  # 85+ tests, incl. real XPC, kernel ceilings, and cei
 .build/release/talon run --mem 2G -- cmd  # kernel memory ceiling at launch, no admin
 ```
 
-History, ceilings, `cap`, `freeze` and `apps` talk to `talond`. Run it one of two ways:
+Use `make app-demo` to try the menu bar app on synthetic data. To collect live history or manage process ceilings, start `talond` using one of the modes below.
 
 | | Command | Sees | Can |
 |---|---|---|---|
 | **User agent** | `make agent` · `make unagent` | your processes | history, ceilings (Hard cap falls back to stopping the largest process), freeze / thaw |
 | **Root daemon** | `make build && sudo make install` · `sudo make uninstall` | every process | all of that, plus kernel ceilings on running apps |
+
+The user agent leaves the CLI in the checkout. Run `export PATH="$PWD/.build/release:$PATH"` before using the examples below. The root installer adds `talon` under `/usr/local/bin` by default.
 
 ```bash
 talon daemon                          # is it running, and what does it cost?
@@ -366,5 +370,5 @@ talon/
 
 <p align="center">
   <sub><b>talon</b> — the claw of a bird of prey. It grips hard, and lets go exactly when it should.</sub><br>
-  <sub>A personal project, built for exactly one Mac.</sub>
+  <sub>Built and tested on an M5 MacBook Air.</sub>
 </p>
