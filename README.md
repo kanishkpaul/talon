@@ -366,6 +366,10 @@ talon/
 - **Honest numbers.** Apple's figures where they exist, raw values beside them, and a clear line between measured and estimated.
 - **Native or nothing.** No web views. Liquid Glass, SF Symbols, spring animations, real haptics.
 
+## License
+
+This project is licensed under the [MIT License](LICENSE).
+
 <br>
 
 <p align="center">
